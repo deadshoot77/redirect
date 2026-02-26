@@ -45,17 +45,19 @@ export async function POST(request: NextRequest) {
   }
 
   try {
+    const selectedPixelType =
+      parsed.data.pixel_type && parsed.data.pixel_type !== "none" ? parsed.data.pixel_type : null;
+    const pixelEnabled = parsed.data.pixel_enabled && selectedPixelType !== null;
+    const pixelConfigValue = pixelEnabled ? (parsed.data.pixel_config ?? {}) : null;
+
     await upsertRedirectRule({
       slug: parsed.data.slug,
       targetUrl: parsed.data.target_url,
       statusCode: parsed.data.status_code,
       isActive: parsed.data.is_active,
-      pixelEnabled: parsed.data.pixel_enabled,
-      pixelType: parsed.data.pixel_enabled ? parsed.data.pixel_type ?? null : null,
-      pixelConfig:
-        parsed.data.pixel_enabled && parsed.data.pixel_config
-          ? JSON.stringify(parsed.data.pixel_config)
-          : null
+      pixelEnabled,
+      pixelType: selectedPixelType,
+      pixelConfig: pixelConfigValue === null ? null : JSON.stringify(pixelConfigValue)
     });
 
     return NextResponse.json({ ok: true });

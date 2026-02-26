@@ -7,6 +7,7 @@ export const slugSchema = z
   .regex(/^[a-z0-9][a-z0-9_-]{0,119}$/, "slug must match ^[a-z0-9][a-z0-9_-]{0,119}$");
 
 export const pixelTypeSchema = z.enum(["meta", "tiktok", "google", "postback"]);
+export const adminPixelTypeSchema = z.union([pixelTypeSchema, z.literal("none")]);
 
 export const pixelConfigSchema = z.object({
   id: z.string().min(1, "pixel_config.id is required"),
@@ -26,31 +27,15 @@ export const redirectRuleInputSchema = z
     status_code: z.union([z.literal(301), z.literal(302)]).default(302),
     is_active: z.boolean().default(true),
     pixel_enabled: z.boolean().default(false),
-    pixel_type: pixelTypeSchema.nullable().optional(),
-    pixel_config: pixelConfigSchema.nullable().optional()
+    pixel_type: adminPixelTypeSchema.nullable().optional().default("none"),
+    pixel_config: z.unknown().nullable().optional()
   })
   .superRefine((value, ctx) => {
-    if (value.pixel_enabled && !value.pixel_type) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["pixel_type"],
-        message: "pixel_type is required when pixel_enabled is true"
-      });
-    }
-
-    if (value.pixel_enabled && !value.pixel_config) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["pixel_config"],
-        message: "pixel_config is required when pixel_enabled is true"
-      });
-    }
-
-    if (!value.pixel_enabled && (value.pixel_type || value.pixel_config)) {
+    if (!value.pixel_enabled && value.pixel_config) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["pixel_enabled"],
-        message: "pixel_type/pixel_config must be omitted when pixel_enabled is false"
+        message: "pixel_config must be omitted when pixel_enabled is false"
       });
     }
   });

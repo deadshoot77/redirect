@@ -15,6 +15,7 @@ import {
   Tooltip
 } from "chart.js";
 import type { DailyPoint, HourlyPoint, LabelCount } from "@/lib/analytics";
+import { t, type AdminLang } from "@/lib/i18n";
 
 ChartJS.register(
   CategoryScale,
@@ -29,6 +30,7 @@ ChartJS.register(
 );
 
 interface AdminChartsProps {
+  lang: AdminLang;
   daily7: DailyPoint[];
   daily30: DailyPoint[];
   hourly: HourlyPoint[];
@@ -36,7 +38,7 @@ interface AdminChartsProps {
   topCountries: LabelCount[];
 }
 
-export default function AdminCharts({ daily7, daily30, hourly, topDevices, topCountries }: AdminChartsProps) {
+export default function AdminCharts({ lang, daily7, daily30, hourly, topDevices, topCountries }: AdminChartsProps) {
   const [range, setRange] = useState<7 | 30>(30);
   const daily = range === 7 ? daily7 : daily30;
 
@@ -45,7 +47,7 @@ export default function AdminCharts({ daily7, daily30, hourly, topDevices, topCo
       labels: daily.map((point) => point.day.slice(5)),
       datasets: [
         {
-          label: `Clicks (${range}d)`,
+          label: `${t(lang, "chartClicksLabel")} (${range}d)`,
           data: daily.map((point) => point.clicks),
           borderColor: "#0f766e",
           backgroundColor: "rgba(15, 118, 110, 0.15)",
@@ -54,7 +56,7 @@ export default function AdminCharts({ daily7, daily30, hourly, topDevices, topCo
         }
       ]
     }),
-    [daily, range]
+    [daily, lang, range]
   );
 
   const hourlyData = useMemo(
@@ -62,13 +64,13 @@ export default function AdminCharts({ daily7, daily30, hourly, topDevices, topCo
       labels: hourly.map((point) => point.hour),
       datasets: [
         {
-          label: "Clicks by hour",
+          label: t(lang, "chartClicksByHourLabel"),
           data: hourly.map((point) => point.clicks),
           backgroundColor: "#0ea5e9"
         }
       ]
     }),
-    [hourly]
+    [hourly, lang]
   );
 
   const deviceData = useMemo(
@@ -89,20 +91,20 @@ export default function AdminCharts({ daily7, daily30, hourly, topDevices, topCo
       labels: topCountries.map((item) => item.label),
       datasets: [
         {
-          label: "Clicks by country",
+          label: t(lang, "chartClicksByCountryLabel"),
           data: topCountries.map((item) => item.clicks),
           backgroundColor: "#22c55e"
         }
       ]
     }),
-    [topCountries]
+    [lang, topCountries]
   );
 
   return (
     <section className="charts-grid">
       <article className="card">
         <div className="chart-header">
-          <h3>Daily clicks</h3>
+          <h3>{t(lang, "chartDailyClicks")}</h3>
           <div className="toggle-group">
             <button
               type="button"
@@ -124,17 +126,17 @@ export default function AdminCharts({ daily7, daily30, hourly, topDevices, topCo
       </article>
 
       <article className="card">
-        <h3>Hourly clicks (last 30d)</h3>
+        <h3>{t(lang, "chartHourlyClicksLast30")}</h3>
         <Bar data={hourlyData} />
       </article>
 
       <article className="card">
-        <h3>Top devices</h3>
+        <h3>{t(lang, "chartTopDevices")}</h3>
         <Doughnut data={deviceData} />
       </article>
 
       <article className="card">
-        <h3>Top countries</h3>
+        <h3>{t(lang, "chartTopCountries")}</h3>
         <Bar data={countryData} />
       </article>
     </section>

@@ -53,6 +53,13 @@ a {
   font-size: 1.5rem;
 }
 
+.login-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
 .login-card p {
   margin: 0;
   color: var(--muted);
@@ -149,6 +156,27 @@ button:disabled {
   align-items: center;
 }
 
+.language-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  min-width: 82px;
+  justify-content: center;
+  border: 1px solid var(--border);
+  background: #ffffff;
+  color: #4b5563;
+}
+
+.language-toggle:hover {
+  border-color: #cbd5e1;
+  background: #f8fafc;
+}
+
+.language-toggle span.active {
+  color: #0f172a;
+  font-weight: 700;
+}
+
 .metrics-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -184,6 +212,136 @@ button:disabled {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 1rem;
+}
+
+.rules-manager {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.rules-header h2 {
+  margin: 0;
+  font-size: 1.35rem;
+}
+
+.rules-header p {
+  margin: 0.25rem 0 0;
+  color: var(--muted);
+}
+
+.feedback {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.success-text {
+  color: #166534;
+}
+
+.rules-layout {
+  display: grid;
+  grid-template-columns: minmax(320px, 380px) 1fr;
+  gap: 1rem;
+}
+
+.rules-form {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.rules-form label {
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.rules-form input,
+.rules-form select,
+.rules-form textarea,
+.data-table select {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.55rem 0.65rem;
+  font-size: 0.9rem;
+  background: #ffffff;
+  color: var(--text);
+}
+
+.rules-form textarea {
+  resize: vertical;
+  min-height: 120px;
+  font-family: "Consolas", "SFMono-Regular", "Menlo", monospace;
+}
+
+.rules-form input:focus,
+.rules-form select:focus,
+.rules-form textarea:focus,
+.data-table select:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.14);
+  outline: none;
+}
+
+.rules-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  align-items: end;
+}
+
+.inline-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 38px;
+  color: #374151;
+}
+
+.inline-checkbox input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
+.inline-checkbox.compact {
+  min-height: auto;
+}
+
+.inline-checkbox.compact span {
+  font-size: 0.82rem;
+}
+
+.field-hint {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.form-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 0.35rem;
+}
+
+.loading-text {
+  margin: 0 0 0.75rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.table-actions {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.danger-button {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.danger-button:hover {
+  background: #fecaca;
 }
 
 .card {
@@ -258,6 +416,10 @@ button:disabled {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .rules-layout {
+    grid-template-columns: 1fr;
+  }
+
   .charts-grid,
   .tables-grid {
     grid-template-columns: 1fr;
@@ -280,5 +442,18 @@ button:disabled {
   .header-actions {
     width: 100%;
     justify-content: flex-start;
+  }
+
+  .login-card-head {
+    align-items: center;
+  }
+
+  .rules-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .table-actions {
+    flex-direction: column;
+    align-items: stretch;
   }
 }
