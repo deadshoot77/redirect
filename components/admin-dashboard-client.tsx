@@ -26,8 +26,7 @@ export default function AdminDashboardClient({ dashboard, rules }: AdminDashboar
     setLang(stored);
   }, []);
 
-  function toggleLanguage() {
-    const nextLang: AdminLang = lang === "fr" ? "en" : "fr";
+  function setLanguage(nextLang: AdminLang) {
     setLang(nextLang);
     window.localStorage.setItem(ADMIN_LANG_STORAGE_KEY, nextLang);
   }
@@ -40,7 +39,7 @@ export default function AdminDashboardClient({ dashboard, rules }: AdminDashboar
           <p>{t(lang, "adminSubtitle")}</p>
         </div>
         <div className="header-actions">
-          <AdminLanguageToggle lang={lang} onToggle={toggleLanguage} ariaLabel={t(lang, "languageToggleAria")} />
+          <AdminLanguageToggle lang={lang} onChange={setLanguage} ariaLabel={t(lang, "languageToggleAria")} />
           <a className="secondary-button" href="/api/admin/export">
             {t(lang, "exportCsv")}
           </a>

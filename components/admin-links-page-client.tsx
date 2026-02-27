@@ -225,8 +225,7 @@ export default function AdminLinksPageClient({ initialLinks, initialGlobalAnalyt
 
   const activeLinkAnalytics = activeLinkStats ? linkAnalytics[activeLinkStats.id] : null;
 
-  function toggleLanguage() {
-    const nextLang: AdminLang = lang === "fr" ? "en" : "fr";
+  function setLanguage(nextLang: AdminLang) {
     setLang(nextLang);
     window.localStorage.setItem(ADMIN_LANG_STORAGE_KEY, nextLang);
   }
@@ -377,7 +376,7 @@ export default function AdminLinksPageClient({ initialLinks, initialGlobalAnalyt
           <h1>{copy.linksTitle}</h1>
         </div>
         <div className="rb-header-actions">
-          <AdminLanguageToggle lang={lang} onToggle={toggleLanguage} ariaLabel={copy.languageToggleAria} />
+          <AdminLanguageToggle lang={lang} onChange={setLanguage} ariaLabel={copy.languageToggleAria} />
           <LogoutButton label={copy.logout} loadingLabel={copy.signingOut} />
         </div>
       </header>

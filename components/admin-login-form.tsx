@@ -17,8 +17,7 @@ export default function AdminLoginForm() {
     setLang(stored);
   }, []);
 
-  function toggleLanguage() {
-    const nextLang: AdminLang = lang === "fr" ? "en" : "fr";
+  function setLanguage(nextLang: AdminLang) {
     setLang(nextLang);
     window.localStorage.setItem(ADMIN_LANG_STORAGE_KEY, nextLang);
   }
@@ -57,7 +56,7 @@ export default function AdminLoginForm() {
     <form className="login-card" onSubmit={onSubmit}>
       <div className="login-card-head">
         <h1>{t(lang, "loginTitle")}</h1>
-        <AdminLanguageToggle lang={lang} onToggle={toggleLanguage} ariaLabel={t(lang, "languageToggleAria")} />
+        <AdminLanguageToggle lang={lang} onChange={setLanguage} ariaLabel={t(lang, "languageToggleAria")} />
       </div>
       <p>{t(lang, "loginSubtitle")}</p>
       <label htmlFor="password">{t(lang, "loginPasswordLabel")}</label>

@@ -549,7 +549,7 @@ button:disabled {
   border-radius: 12px;
   background: #070b10;
   overflow: hidden;
-  min-height: 360px;
+  min-height: 420px;
   position: relative;
 }
 
@@ -557,7 +557,7 @@ button:disabled {
   display: block;
   width: 100%;
   height: auto;
-  aspect-ratio: 1000 / 470;
+  aspect-ratio: 1200 / 500;
 }
 
 .rb-world-map-wrap {
@@ -624,6 +624,12 @@ button:disabled {
   gap: 0.6rem;
   padding: 0.58rem 0.45rem;
   border-bottom: 1px solid rgba(46, 58, 78, 0.8);
+}
+
+.rb-country-list li span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
 }
 
 .rb-country-list li.active {
@@ -817,16 +823,16 @@ button:disabled {
 .language-toggle-trigger {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
-  border: 1px solid #cfd4da;
+  gap: 0.42rem;
+  border: 2px solid #d8ddea;
   border-radius: 10px;
-  background: #2b2f46;
+  background: #34304f;
   color: #fff;
-  padding: 0.45rem 0.68rem;
+  padding: 0.44rem 0.74rem;
 }
 
 .language-toggle-trigger:hover {
-  background: #343a56;
+  background: #3f395d;
 }
 
 .language-toggle-trigger svg {
@@ -840,6 +846,8 @@ button:disabled {
 .language-code {
   font-weight: 700;
   letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: #e8ebf5;
 }
 
 .language-name {
@@ -853,9 +861,9 @@ button:disabled {
   right: 0;
   z-index: 40;
   min-width: 220px;
-  border: 1px solid #586174;
+  border: 1px solid #6f7890;
   border-radius: 12px;
-  background: #121b2d;
+  background: #1b2237;
   padding: 0.45rem;
   box-shadow: 0 14px 24px rgba(0, 0, 0, 0.35);
 }
@@ -869,17 +877,17 @@ button:disabled {
   border: 0;
   border-radius: 9px;
   padding: 0.55rem 0.6rem;
-  color: #dce6f6;
-  background: transparent;
+  color: #dfe6f6;
+  background: #2a334a;
   text-align: left;
 }
 
 .language-option:hover {
-  background: #1e2941;
+  background: #313d59;
 }
 
 .language-option.active {
-  background: linear-gradient(135deg, #7e22ce, #db2777);
+  background: linear-gradient(135deg, #8b28db 0%, #d81f8a 100%);
   color: #fff;
 }
 

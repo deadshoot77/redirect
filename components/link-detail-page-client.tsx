@@ -182,8 +182,7 @@ export default function LinkDetailPageClient({ initialLink, initialAnalytics }: 
 
   const bestHours = useMemo(() => getTopShareHours(analytics.popularHours), [analytics.popularHours]);
 
-  function toggleLanguage() {
-    const nextLang: AdminLang = lang === "fr" ? "en" : "fr";
+  function setLanguage(nextLang: AdminLang) {
     setLang(nextLang);
     window.localStorage.setItem(ADMIN_LANG_STORAGE_KEY, nextLang);
   }
@@ -263,7 +262,7 @@ export default function LinkDetailPageClient({ initialLink, initialAnalytics }: 
           <p className="rb-muted">{copy.detailSubtitle}</p>
         </div>
         <div className="rb-header-actions">
-          <AdminLanguageToggle lang={lang} onToggle={toggleLanguage} ariaLabel={copy.languageToggleAria} />
+          <AdminLanguageToggle lang={lang} onChange={setLanguage} ariaLabel={copy.languageToggleAria} />
           <button type="button" className="rb-primary" disabled={saving} onClick={() => void onCopy(shortUrl)}>
             {copy.copyShortLink}
           </button>
