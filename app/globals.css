@@ -585,6 +585,9 @@ button:disabled {
 }
 
 .rb-map-tooltip span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.32rem;
   font-size: 0.86rem;
   color: #dbe3ef;
 }
@@ -630,6 +633,14 @@ button:disabled {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
+}
+
+.rb-flag {
+  display: inline-block;
+  font-style: normal;
+  font-size: 1rem;
+  line-height: 1;
+  font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", "Twemoji Mozilla", sans-serif;
 }
 
 .rb-country-list li.active {
@@ -824,15 +835,15 @@ button:disabled {
   display: inline-flex;
   align-items: center;
   gap: 0.42rem;
-  border: 2px solid #d8ddea;
+  border: 1px solid #44536b;
   border-radius: 10px;
-  background: #34304f;
-  color: #fff;
+  background: #162234;
+  color: #e8edf6;
   padding: 0.44rem 0.74rem;
 }
 
 .language-toggle-trigger:hover {
-  background: #3f395d;
+  background: #1c2b42;
 }
 
 .language-toggle-trigger svg {
@@ -847,11 +858,11 @@ button:disabled {
   font-weight: 700;
   letter-spacing: 0.03em;
   text-transform: uppercase;
-  color: #e8ebf5;
+  color: #d5def0;
 }
 
 .language-name {
-  color: #f2f4f8;
+  color: #f7f9fc;
   font-weight: 600;
 }
 
@@ -861,9 +872,9 @@ button:disabled {
   right: 0;
   z-index: 40;
   min-width: 220px;
-  border: 1px solid #6f7890;
+  border: 1px solid #3d4f69;
   border-radius: 12px;
-  background: #1b2237;
+  background: #111b2a;
   padding: 0.45rem;
   box-shadow: 0 14px 24px rgba(0, 0, 0, 0.35);
 }
@@ -878,16 +889,16 @@ button:disabled {
   border-radius: 9px;
   padding: 0.55rem 0.6rem;
   color: #dfe6f6;
-  background: #2a334a;
+  background: #1c2a40;
   text-align: left;
 }
 
 .language-option:hover {
-  background: #313d59;
+  background: #243652;
 }
 
 .language-option.active {
-  background: linear-gradient(135deg, #8b28db 0%, #d81f8a 100%);
+  background: linear-gradient(135deg, #ef4444 0%, #f97316 100%);
   color: #fff;
 }
 

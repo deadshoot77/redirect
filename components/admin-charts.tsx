@@ -338,10 +338,6 @@ function WorldHeatMap({ data, lang }: { data: LabelCount[]; lang: AdminLang }) {
   }, [mapFeatures]);
 
   function onCountryHover(event: React.MouseEvent<SVGPathElement>, countryCode: string, clicks: number) {
-    if (clicks <= 0) {
-      setHovered(null);
-      return;
-    }
     const svg = event.currentTarget.ownerSVGElement;
     if (!svg) return;
     const rect = svg.getBoundingClientRect();
@@ -390,7 +386,10 @@ function WorldHeatMap({ data, lang }: { data: LabelCount[]; lang: AdminLang }) {
           <div className="rb-map-tooltip" style={{ left: `${hovered.x}px`, top: `${hovered.y}px` }}>
             <strong>{formatPercent(hovered.share, lang)}%</strong>
             <span>
-              {hovered.flag} {hovered.name}
+              <i className="rb-flag" aria-hidden="true">
+                {hovered.flag}
+              </i>
+              {hovered.name}
             </span>
             <small>{formatNumber(hovered.clicks, lang)}</small>
           </div>
@@ -407,7 +406,10 @@ function WorldHeatMap({ data, lang }: { data: LabelCount[]; lang: AdminLang }) {
           {countryRows.topCountries.map((country, index) => (
             <li key={country.code} className={index === 0 ? "active" : ""}>
               <span>
-                {country.flag} {country.name}
+                <i className="rb-flag" aria-hidden="true">
+                  {country.flag}
+                </i>
+                {country.name}
               </span>
               <strong>{formatPercent(country.share, lang)}%</strong>
             </li>
