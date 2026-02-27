@@ -97,10 +97,7 @@ export const shortLinkPatchSchema = shortLinkCreateSchema
 
 export const adminSettingsPatchSchema = z
   .object({
-    plan: z.enum(["free", "pro"]).optional(),
-    click_limit_monthly: z.number().int().positive().optional(),
-    tracking_enabled: z.boolean().optional(),
-    limit_behavior: z.enum(["drop", "minimal"]).optional()
+    tracking_enabled: z.boolean().optional()
   })
   .refine((value) => Object.keys(value).length > 0, {
     message: "At least one setting must be provided"

@@ -7,7 +7,6 @@ Advanced redirector with Rebrandly-like admin:
 - deep links + retargeting scripts
 - admin links list: `/admin/links`
 - admin link detail + analytics report: `/admin/links/:id`
-- monthly tracking limit banner + plan locks (`free` / `pro`)
 
 ## Features
 
@@ -18,10 +17,6 @@ Advanced redirector with Rebrandly-like admin:
 - Tracking
   - stores timestamp, slug, UA, referrer, hashed IP, geo headers, browser/device/platform, language, source, query params, UTM
   - unique click detection on `(link_id, ip_hash)` over 24h
-- Limits/plan
-  - `admin_settings.plan` controls locked analytics cards
-  - `admin_settings.click_limit_monthly` + `limit_behavior` (`drop` or `minimal`)
-  - admin red banner when limit reached
 
 ## Environment Variables
 
@@ -38,11 +33,7 @@ DEFAULT_REDIRECT_STATUS=302
 ADMIN_PASSWORD=ChangeThisPasswordNow
 AUTH_SECRET=replace-with-a-very-long-random-secret-32-chars-min
 IP_HASH_SALT=replace-with-another-random-secret-16-chars-min
-
-CLICK_LIMIT_MONTHLY=10000
 TRACKING_ENABLED_DEFAULT=true
-TRACKING_LIMIT_BEHAVIOR=drop
-ADMIN_PLAN_DEFAULT=free
 ```
 
 ## Local Setup
@@ -80,7 +71,7 @@ If `/api/admin/links` returns `Could not find table public.short_links`, the mig
 - `click_events`
   - detailed click analytics fields
 - `admin_settings`
-  - singleton row (`id=1`) with `plan`, tracking limit, behavior
+  - singleton row (`id=1`) with tracking settings
 
 ## Admin Routes
 
@@ -104,7 +95,6 @@ API:
    - **Overall performance** increments
    - top sources/devices/countries update
    - Hours/Days/Months toggle works
-7. Set `plan=free` in UI and verify locked cards display “Upgrade to reveal”.
 
 ## Build Check
 

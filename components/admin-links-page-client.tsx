@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import AdminLanguageToggle from "@/components/admin-language-toggle";
 import LogoutButton from "@/components/logout-button";
-import type { PaginatedShortLinks } from "@/lib/links";
-import type { AdminSettings } from "@/lib/types";
+import type { GlobalLinksStats, PaginatedShortLinks } from "@/lib/links";
+import { ADMIN_LANG_STORAGE_KEY, normalizeAdminLang, type AdminLang } from "@/lib/i18n";
 
 interface AdminLinksPageClientProps {
   initialLinks: PaginatedShortLinks;
-  initialSettings: AdminSettings;
+  initialGlobalStats: GlobalLinksStats;
 }
 
 type ViewMode = "list" | "grid";
@@ -19,6 +20,103 @@ interface NewLinkFormState {
   tags: string;
   redirect_type: 301 | 302;
 }
+
+const words = {
+  fr: {
+    admin: "Admin",
+    linksTitle: "Liens",
+    languageToggleAria: "Basculer la langue",
+    logout: "Se deconnecter",
+    signingOut: "Deconnexion...",
+    globalStatsTitle: "Statistiques globales (tous les liens)",
+    totalLinks: "Liens actifs",
+    totalClicks: "Clics totaux",
+    clicksToday: "Clics aujourd'hui",
+    uniqueClicks: "Clics uniques",
+    clicksLast7Days: "Clics (7 jours)",
+    topLinks: "Top liens",
+    topCountries: "Top pays",
+    topSources: "Top sources",
+    noData: "Pas de donnees",
+    sort: "Trier",
+    latest: "Recents",
+    oldest: "Anciens",
+    mostClicks: "Plus de clics",
+    list: "Liste",
+    grid: "Grille",
+    newLink: "Nouveau lien",
+    createTitle: "Creer un nouveau lien",
+    slug: "Slug",
+    destinationUrl: "URL de destination",
+    tags: "Tags",
+    redirectType: "Type de redirection",
+    createLink: "Creer le lien",
+    creating: "Creation...",
+    cancel: "Annuler",
+    refreshLinks: "Actualisation...",
+    tableLinkTitle: "Titre du lien",
+    tableDestinationUrl: "URL de destination",
+    tableClicksReceived: "Clics recus",
+    tableCreationDate: "Date de creation",
+    tableActions: "Actions",
+    noLinksYet: "Aucun lien pour le moment.",
+    copy: "Copier",
+    open: "Ouvrir",
+    previous: "Precedent",
+    next: "Suivant",
+    page: "Page",
+    copiedPrefix: "Copie",
+    never: "Jamais",
+    clicks: "clics"
+  },
+  en: {
+    admin: "Admin",
+    linksTitle: "Links",
+    languageToggleAria: "Toggle language",
+    logout: "Logout",
+    signingOut: "Signing out...",
+    globalStatsTitle: "Global Stats (all links)",
+    totalLinks: "Active links",
+    totalClicks: "Total clicks",
+    clicksToday: "Clicks today",
+    uniqueClicks: "Unique clicks",
+    clicksLast7Days: "Clicks (7 days)",
+    topLinks: "Top links",
+    topCountries: "Top countries",
+    topSources: "Top sources",
+    noData: "No data",
+    sort: "Sort",
+    latest: "Latest",
+    oldest: "Oldest",
+    mostClicks: "Most clicks",
+    list: "List",
+    grid: "Grid",
+    newLink: "New link",
+    createTitle: "Create new link",
+    slug: "Slug",
+    destinationUrl: "Destination URL",
+    tags: "Tags",
+    redirectType: "Redirect type",
+    createLink: "Create link",
+    creating: "Creating...",
+    cancel: "Cancel",
+    refreshLinks: "Refreshing links...",
+    tableLinkTitle: "Link title",
+    tableDestinationUrl: "Destination URL",
+    tableClicksReceived: "Clicks received",
+    tableCreationDate: "Creation date",
+    tableActions: "Actions",
+    noLinksYet: "No links yet.",
+    copy: "Copy",
+    open: "Open",
+    previous: "Previous",
+    next: "Next",
+    page: "Page",
+    copiedPrefix: "Copied",
+    never: "Never",
+    clicks: "clicks"
+  }
+} as const;
 
 function createDefaultFormState(): NewLinkFormState {
   return {
@@ -39,24 +137,53 @@ function toErrorMessage(payload: unknown, fallback: string): string {
   return candidate.error ?? fallback;
 }
 
-function formatDate(value: string | null): string {
-  if (!value) return "Never";
+function formatDate(value: string | null, lang: AdminLang): string {
+  if (!value) return words[lang].never;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString("en-US", {
+  return date.toLocaleString(lang === "fr" ? "fr-FR" : "en-US", {
     year: "numeric",
     month: "short",
     day: "numeric"
   });
 }
 
-function formatNumber(value: number): string {
-  return new Intl.NumberFormat("en-US").format(value);
+function formatNumber(value: number, lang: AdminLang): string {
+  return new Intl.NumberFormat(lang === "fr" ? "fr-FR" : "en-US").format(value);
 }
 
-export default function AdminLinksPageClient({ initialLinks, initialSettings }: AdminLinksPageClientProps) {
+function StatsList({
+  title,
+  items,
+  lang
+}: {
+  title: string;
+  items: Array<{ label: string; clicks: number }>;
+  lang: AdminLang;
+}) {
+  return (
+    <article className="rb-panel rb-analytics-card">
+      <h3>{title}</h3>
+      {items.length === 0 ? (
+        <p className="rb-muted">{words[lang].noData}</p>
+      ) : (
+        <ul className="rb-stat-list">
+          {items.map((item) => (
+            <li key={item.label}>
+              <span>{item.label}</span>
+              <strong>{formatNumber(item.clicks, lang)}</strong>
+            </li>
+          ))}
+        </ul>
+      )}
+    </article>
+  );
+}
+
+export default function AdminLinksPageClient({ initialLinks, initialGlobalStats }: AdminLinksPageClientProps) {
   const [links, setLinks] = useState<PaginatedShortLinks>(initialLinks);
-  const [settings, setSettings] = useState<AdminSettings>(initialSettings);
+  const [globalStats, setGlobalStats] = useState<GlobalLinksStats>(initialGlobalStats);
+  const [lang, setLang] = useState<AdminLang>("fr");
   const [viewMode, setViewMode] = useState<ViewMode>("list");
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -67,11 +194,28 @@ export default function AdminLinksPageClient({ initialLinks, initialSettings }: 
 
   useEffect(() => {
     setOrigin(window.location.origin);
+    const stored = normalizeAdminLang(window.localStorage.getItem(ADMIN_LANG_STORAGE_KEY));
+    setLang(stored);
   }, []);
 
-  const usageLabel = useMemo(() => {
-    return `${formatNumber(settings.usageThisMonth)} / ${formatNumber(settings.clickLimitMonthly)}`;
-  }, [settings.clickLimitMonthly, settings.usageThisMonth]);
+  const copy = words[lang];
+
+  const statsCards = useMemo(
+    () => [
+      { label: copy.totalLinks, value: globalStats.totalLinks },
+      { label: copy.totalClicks, value: globalStats.totalClicks },
+      { label: copy.clicksToday, value: globalStats.clicksToday },
+      { label: copy.uniqueClicks, value: globalStats.uniqueClicks },
+      { label: copy.clicksLast7Days, value: globalStats.clicksLast7Days }
+    ],
+    [copy.clicksLast7Days, copy.clicksToday, copy.totalClicks, copy.totalLinks, copy.uniqueClicks, globalStats]
+  );
+
+  function toggleLanguage() {
+    const nextLang: AdminLang = lang === "fr" ? "en" : "fr";
+    setLang(nextLang);
+    window.localStorage.setItem(ADMIN_LANG_STORAGE_KEY, nextLang);
+  }
 
   async function refresh(nextPage = links.page) {
     setLoading(true);
@@ -83,17 +227,17 @@ export default function AdminLinksPageClient({ initialLinks, initialSettings }: 
       const payload = (await response.json().catch(() => null)) as
         | {
             links?: PaginatedShortLinks;
-            settings?: AdminSettings;
+            globalStats?: GlobalLinksStats;
             error?: string;
           }
         | null;
 
-      if (!response.ok || !payload?.links || !payload?.settings) {
+      if (!response.ok || !payload?.links || !payload?.globalStats) {
         throw new Error(toErrorMessage(payload, "Failed to refresh links"));
       }
 
       setLinks(payload.links);
-      setSettings(payload.settings);
+      setGlobalStats(payload.globalStats);
     } catch (error) {
       setFeedback(error instanceof Error ? error.message : "Failed to refresh links");
     } finally {
@@ -167,102 +311,75 @@ export default function AdminLinksPageClient({ initialLinks, initialSettings }: 
     }
   }
 
-  async function updatePlan(nextPlan: "free" | "pro") {
-    setFeedback(null);
-    try {
-      const response = await fetch("/api/admin/settings", {
-        method: "PATCH",
-        credentials: "include",
-        headers: {
-          "content-type": "application/json"
-        },
-        body: JSON.stringify({
-          plan: nextPlan
-        })
-      });
-      const payload = (await response.json().catch(() => null)) as { settings?: AdminSettings; error?: string } | null;
-      if (!response.ok || !payload?.settings) {
-        throw new Error(toErrorMessage(payload, "Failed to update plan"));
-      }
-      setSettings(payload.settings);
-    } catch (error) {
-      setFeedback(error instanceof Error ? error.message : "Failed to update plan");
-    }
-  }
-
   async function copyLink(slug: string) {
     if (!origin) return;
     const full = `${origin}/${slug}`;
     await navigator.clipboard.writeText(full);
-    setFeedback(`Copied ${full}`);
+    setFeedback(`${copy.copiedPrefix}: ${full}`);
   }
 
   return (
     <main className="rb-page">
       <header className="rb-header">
         <div>
-          <p className="rb-eyebrow">Admin</p>
-          <h1>Links</h1>
+          <p className="rb-eyebrow">{copy.admin}</p>
+          <h1>{copy.linksTitle}</h1>
         </div>
         <div className="rb-header-actions">
-          <label className="rb-inline-control" htmlFor="plan_select">
-            Plan
-            <select
-              id="plan_select"
-              value={settings.plan}
-              onChange={(event) => void updatePlan(event.target.value as "free" | "pro")}
-            >
-              <option value="free">Free</option>
-              <option value="pro">Pro</option>
-            </select>
-          </label>
-          <span className="rb-usage">Tracked this month: {usageLabel}</span>
-          <LogoutButton label="Logout" loadingLabel="Signing out..." />
+          <AdminLanguageToggle lang={lang} onToggle={toggleLanguage} ariaLabel={copy.languageToggleAria} />
+          <LogoutButton label={copy.logout} loadingLabel={copy.signingOut} />
         </div>
       </header>
 
-      {settings.limitReached ? (
-        <section className="rb-alert rb-alert-danger">
-          <div>
-            <strong>You&apos;ve reached the limit for click tracking this month.</strong>
-            <p>Data may not be fully accurate until your next cycle or upgrade.</p>
-          </div>
-          <button type="button">Upgrade</button>
-        </section>
-      ) : null}
+      <section className="rb-panel">
+        <h2>{copy.globalStatsTitle}</h2>
+        <div className="rb-global-metrics">
+          {statsCards.map((item) => (
+            <article key={item.label}>
+              <span>{item.label}</span>
+              <strong>{formatNumber(item.value, lang)}</strong>
+            </article>
+          ))}
+        </div>
+        <div className="rb-report-grid rb-global-lists">
+          <StatsList title={copy.topLinks} items={globalStats.topLinks} lang={lang} />
+          <StatsList title={copy.topCountries} items={globalStats.topCountries} lang={lang} />
+          <StatsList title={copy.topSources} items={globalStats.topSources} lang={lang} />
+        </div>
+      </section>
 
       <section className="rb-toolbar">
         <div className="rb-toolbar-left">
           <label htmlFor="sort_select">
-            Sort
+            {copy.sort}
             <select id="sort_select" defaultValue="latest">
-              <option value="latest">Latest</option>
-              <option value="oldest">Oldest</option>
-              <option value="clicks">Most clicks</option>
+              <option value="latest">{copy.latest}</option>
+              <option value="oldest">{copy.oldest}</option>
+              <option value="clicks">{copy.mostClicks}</option>
             </select>
           </label>
         </div>
         <div className="rb-toolbar-right">
           <div className="rb-view-toggle">
             <button type="button" className={viewMode === "list" ? "active" : ""} onClick={() => setViewMode("list")}>
-              List
+              {copy.list}
             </button>
             <button type="button" className={viewMode === "grid" ? "active" : ""} onClick={() => setViewMode("grid")}>
-              Grid
+              {copy.grid}
             </button>
           </div>
           <button type="button" className="rb-primary" onClick={() => setShowNewLinkForm((value) => !value)}>
-            New link
+            {copy.newLink}
           </button>
         </div>
       </section>
 
       {showNewLinkForm ? (
         <section className="rb-panel">
-          <h2>Create new link</h2>
+          <h2>{copy.createTitle}</h2>
           <div className="rb-form-grid">
             <label htmlFor="new_slug">
-              Slug
+              {copy.slug}
               <input
                 id="new_slug"
                 value={form.slug}
@@ -271,7 +388,7 @@ export default function AdminLinksPageClient({ initialLinks, initialSettings }: 
               />
             </label>
             <label htmlFor="new_destination">
-              Destination URL
+              {copy.destinationUrl}
               <input
                 id="new_destination"
                 type="url"
@@ -281,7 +398,7 @@ export default function AdminLinksPageClient({ initialLinks, initialSettings }: 
               />
             </label>
             <label htmlFor="new_tags">
-              Tags
+              {copy.tags}
               <input
                 id="new_tags"
                 value={form.tags}
@@ -290,7 +407,7 @@ export default function AdminLinksPageClient({ initialLinks, initialSettings }: 
               />
             </label>
             <label htmlFor="new_redirect_type">
-              Redirect type
+              {copy.redirectType}
               <select
                 id="new_redirect_type"
                 value={form.redirect_type}
@@ -308,10 +425,10 @@ export default function AdminLinksPageClient({ initialLinks, initialSettings }: 
           </div>
           <div className="rb-form-actions">
             <button type="button" className="rb-primary" disabled={creating} onClick={() => void submitNewLink()}>
-              {creating ? "Creating..." : "Create link"}
+              {creating ? copy.creating : copy.createLink}
             </button>
             <button type="button" onClick={() => setShowNewLinkForm(false)}>
-              Cancel
+              {copy.cancel}
             </button>
           </div>
         </section>
@@ -319,24 +436,24 @@ export default function AdminLinksPageClient({ initialLinks, initialSettings }: 
 
       {feedback ? <p className="rb-feedback">{feedback}</p> : null}
 
-      {loading ? <p className="rb-feedback">Refreshing links...</p> : null}
+      {loading ? <p className="rb-feedback">{copy.refreshLinks}</p> : null}
 
       {viewMode === "list" ? (
         <section className="rb-panel">
           <table className="rb-table">
             <thead>
               <tr>
-                <th>Link title</th>
-                <th>Destination URL</th>
-                <th>Clicks received</th>
-                <th>Creation date</th>
-                <th>Actions</th>
+                <th>{copy.tableLinkTitle}</th>
+                <th>{copy.tableDestinationUrl}</th>
+                <th>{copy.tableClicksReceived}</th>
+                <th>{copy.tableCreationDate}</th>
+                <th>{copy.tableActions}</th>
               </tr>
             </thead>
             <tbody>
               {links.items.length === 0 ? (
                 <tr>
-                  <td colSpan={5}>No links yet.</td>
+                  <td colSpan={5}>{copy.noLinksYet}</td>
                 </tr>
               ) : (
                 links.items.map((link) => (
@@ -356,12 +473,12 @@ export default function AdminLinksPageClient({ initialLinks, initialSettings }: 
                       ) : null}
                     </td>
                     <td className="rb-cell-url">{link.destinationUrl}</td>
-                    <td>{formatNumber(link.clicksReceived)}</td>
-                    <td>{formatDate(link.createdAt)}</td>
+                    <td>{formatNumber(link.clicksReceived, lang)}</td>
+                    <td>{formatDate(link.createdAt, lang)}</td>
                     <td>
                       <div className="rb-actions">
                         <button type="button" onClick={() => void copyLink(link.slug)}>
-                          Copy
+                          {copy.copy}
                         </button>
                         <button type="button" onClick={() => void toggleFavorite(link.id, link.isFavorite)}>
                           {link.isFavorite ? "★" : "☆"}
@@ -387,7 +504,9 @@ export default function AdminLinksPageClient({ initialLinks, initialSettings }: 
                 </button>
               </div>
               <p className="rb-card-url">{link.destinationUrl}</p>
-              <p className="rb-card-meta">{formatNumber(link.clicksReceived)} clicks</p>
+              <p className="rb-card-meta">
+                {formatNumber(link.clicksReceived, lang)} {copy.clicks}
+              </p>
               {link.tags.length > 0 ? (
                 <div className="rb-tags">
                   {link.tags.map((tag) => (
@@ -399,10 +518,10 @@ export default function AdminLinksPageClient({ initialLinks, initialSettings }: 
               ) : null}
               <div className="rb-actions">
                 <button type="button" onClick={() => void copyLink(link.slug)}>
-                  Copy
+                  {copy.copy}
                 </button>
                 <Link href={`/admin/links/${link.id}`} className="rb-button-link">
-                  Open
+                  {copy.open}
                 </Link>
               </div>
             </article>
@@ -412,17 +531,17 @@ export default function AdminLinksPageClient({ initialLinks, initialSettings }: 
 
       <footer className="rb-pagination">
         <button type="button" disabled={links.page <= 1 || loading} onClick={() => void refresh(links.page - 1)}>
-          Previous
+          {copy.previous}
         </button>
         <span>
-          Page {links.page} / {links.totalPages}
+          {copy.page} {links.page} / {links.totalPages}
         </span>
         <button
           type="button"
           disabled={links.page >= links.totalPages || loading}
           onClick={() => void refresh(links.page + 1)}
         >
-          Next
+          {copy.next}
         </button>
       </footer>
     </main>

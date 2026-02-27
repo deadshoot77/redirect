@@ -2,7 +2,6 @@ import "server-only";
 import { getSupabaseAdminClient } from "@/lib/db";
 import { env } from "@/lib/env";
 import type {
-  AdminPlan,
   AdminSettings,
   DeepLinksConfig,
   LinkOverviewStats,
@@ -46,8 +45,6 @@ interface ShortLinkListRow {
 }
 
 interface SettingsRow {
-  plan: AdminPlan;
-  click_limit_monthly: number;
   tracking_enabled: boolean;
   limit_behavior: TrackingLimitBehavior;
 }
@@ -106,6 +103,17 @@ export interface PaginatedShortLinks {
   totalPages: number;
 }
 
+export interface GlobalLinksStats {
+  totalLinks: number;
+  totalClicks: number;
+  clicksToday: number;
+  clicksLast7Days: number;
+  uniqueClicks: number;
+  topLinks: LabelCount[];
+  topCountries: LabelCount[];
+  topSources: LabelCount[];
+}
+
 export interface CreateShortLinkInput {
   slug: string;
   destinationUrl: string;
@@ -150,6 +158,14 @@ export interface InsertClickEventInput {
   isUnique: boolean;
   source: string;
   utm: Record<string, string>;
+}
+
+interface ClickEventStatRow {
+  slug: string | null;
+  created_at: string;
+  country: string | null;
+  source: string | null;
+  is_unique: boolean;
 }
 
 function toNumber(value: unknown): number {
@@ -275,10 +291,6 @@ function normalizeSlug(slug: string): string {
   return slug.trim().toLowerCase();
 }
 
-function normalizePlan(value: string | null | undefined): AdminPlan {
-  return value === "pro" ? "pro" : env.ADMIN_PLAN_DEFAULT;
-}
-
 function normalizeLimitBehavior(value: string | null | undefined): TrackingLimitBehavior {
   return value === "minimal" ? "minimal" : env.TRACKING_LIMIT_BEHAVIOR;
 }
@@ -298,18 +310,142 @@ export async function getAdminSettings(): Promise<AdminSettings> {
   }
 
   const usageThisMonth = await getCurrentMonthClicks().catch(() => 0);
-  const clickLimit = toNumber(row?.click_limit_monthly ?? env.CLICK_LIMIT_MONTHLY);
   const trackingEnabled = row?.tracking_enabled ?? env.TRACKING_ENABLED_DEFAULT;
-  const plan = normalizePlan(row?.plan);
   const limitBehavior = normalizeLimitBehavior(row?.limit_behavior);
 
   return {
-    plan,
-    clickLimitMonthly: clickLimit,
+    plan: "pro",
+    clickLimitMonthly: Number.MAX_SAFE_INTEGER,
     trackingEnabled,
     limitBehavior,
     usageThisMonth,
-    limitReached: usageThisMonth >= clickLimit
+    limitReached: false
+  };
+}
+
+function incrementCounter(counter: Map<string, number>, label: string): void {
+  counter.set(label, (counter.get(label) ?? 0) + 1);
+}
+
+function toSortedLabelCounts(counter: Map<string, number>, limit = 8): LabelCount[] {
+  return [...counter.entries()]
+    .map(([label, clicks]) => ({ label, clicks }))
+    .sort((a, b) => b.clicks - a.clicks || a.label.localeCompare(b.label))
+    .slice(0, Math.max(1, limit));
+}
+
+function normalizeSlugLabel(value: string | null): string {
+  const normalized = toString(value).trim();
+  return normalized.length > 0 ? normalized : "unknown";
+}
+
+function normalizeCountryLabel(value: string | null): string {
+  const normalized = toString(value).trim().toUpperCase();
+  if (!normalized || normalized === "UNK" || normalized === "UNKNOWN") {
+    return "Unknown";
+  }
+  return normalized;
+}
+
+function normalizeSourceLabel(value: string | null): string {
+  const normalized = toString(value).trim().toLowerCase();
+  if (!normalized || normalized === "unknown") {
+    return "direct";
+  }
+  return normalized;
+}
+
+async function aggregateGlobalClickStats(
+  batchSize = 1000
+): Promise<Omit<GlobalLinksStats, "totalLinks">> {
+  const safeBatchSize = Math.max(100, Math.min(batchSize, 2000));
+  const now = new Date();
+  const utcTodayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const last7DaysStart = utcTodayStart - 6 * 24 * 60 * 60 * 1000;
+
+  let totalClicks = 0;
+  let clicksToday = 0;
+  let clicksLast7Days = 0;
+  let uniqueClicks = 0;
+  let offset = 0;
+  let batchCount = 0;
+
+  const linksCounter = new Map<string, number>();
+  const countriesCounter = new Map<string, number>();
+  const sourcesCounter = new Map<string, number>();
+
+  while (true) {
+    const { data, error } = await getSupabaseAdminClient()
+      .from("click_events")
+      .select("slug, created_at, country, source, is_unique")
+      .order("created_at", { ascending: false })
+      .range(offset, offset + safeBatchSize - 1);
+
+    if (error) {
+      throw new Error(`aggregateGlobalClickStats failed: ${error.message}`);
+    }
+
+    const rows = (data ?? []) as ClickEventStatRow[];
+    if (rows.length === 0) {
+      break;
+    }
+
+    for (const row of rows) {
+      totalClicks += 1;
+      if (row.is_unique) {
+        uniqueClicks += 1;
+      }
+
+      incrementCounter(linksCounter, normalizeSlugLabel(row.slug));
+      incrementCounter(countriesCounter, normalizeCountryLabel(row.country));
+      incrementCounter(sourcesCounter, normalizeSourceLabel(row.source));
+
+      const eventAt = Date.parse(toString(row.created_at));
+      if (!Number.isNaN(eventAt)) {
+        if (eventAt >= utcTodayStart) {
+          clicksToday += 1;
+        }
+        if (eventAt >= last7DaysStart) {
+          clicksLast7Days += 1;
+        }
+      }
+    }
+
+    if (rows.length < safeBatchSize) {
+      break;
+    }
+
+    offset += safeBatchSize;
+    batchCount += 1;
+    if (batchCount > 2000) {
+      break;
+    }
+  }
+
+  return {
+    totalClicks,
+    clicksToday,
+    clicksLast7Days,
+    uniqueClicks,
+    topLinks: toSortedLabelCounts(linksCounter, 8),
+    topCountries: toSortedLabelCounts(countriesCounter, 8),
+    topSources: toSortedLabelCounts(sourcesCounter, 8)
+  };
+}
+
+export async function getGlobalLinksStats(): Promise<GlobalLinksStats> {
+  const [{ count, error }, clickStats] = await Promise.all([
+    getSupabaseAdminClient().from("short_links").select("id", { head: true, count: "exact" }).eq("is_active", true),
+    aggregateGlobalClickStats()
+  ]);
+
+  if (error) {
+    throw new Error(`getGlobalLinksStats total links failed: ${error.message}`);
+  }
+
+  return {
+    totalLinks: toNumber(count ?? 0),
+    ...clickStats
   };
 }
 
@@ -642,17 +778,11 @@ export async function insertClickEvent(input: InsertClickEventInput, minimal = f
 
 export async function updateAdminSettings(
   patch: Partial<{
-    plan: AdminPlan;
-    clickLimitMonthly: number;
     trackingEnabled: boolean;
-    limitBehavior: TrackingLimitBehavior;
   }>
 ): Promise<void> {
   const payload: Record<string, unknown> = {};
-  if (patch.plan) payload.plan = patch.plan;
-  if (typeof patch.clickLimitMonthly === "number") payload.click_limit_monthly = patch.clickLimitMonthly;
   if (typeof patch.trackingEnabled === "boolean") payload.tracking_enabled = patch.trackingEnabled;
-  if (patch.limitBehavior) payload.limit_behavior = patch.limitBehavior;
   if (Object.keys(payload).length === 0) return;
 
   const { error } = await getSupabaseAdminClient().from("admin_settings").update(payload).eq("id", 1);

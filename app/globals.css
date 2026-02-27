@@ -471,10 +471,6 @@ button:disabled {
   grid-column: 1 / -1;
 }
 
-.rb-overview-card canvas {
-  min-height: 220px !important;
-}
-
 .rb-overview-header {
   display: flex;
   justify-content: space-between;
@@ -529,33 +525,72 @@ button:disabled {
   min-height: 260px;
 }
 
-.rb-world-map {
-  display: grid;
-  gap: 0.7rem;
-}
-
-.rb-world-map svg {
+.rb-chart-box {
+  position: relative;
   width: 100%;
-  height: 150px;
-  border-radius: 12px;
-  border: 1px solid var(--border);
-  background: linear-gradient(145deg, rgba(30, 58, 95, 0.55), rgba(16, 23, 35, 0.9));
 }
 
-.rb-world-map svg path {
-  fill: rgba(251, 146, 60, 0.55);
-  stroke: rgba(251, 191, 36, 0.45);
-  stroke-width: 2;
+.rb-chart-box canvas {
+  width: 100% !important;
+  height: 100% !important;
 }
 
-.rb-world-map > div {
-  min-height: 160px;
+.rb-chart-box-lg {
+  height: 300px;
+}
+
+.rb-chart-box-sm {
+  height: 220px;
 }
 
 .rb-click-type-chart {
-  min-height: 180px;
+  min-height: 0;
   display: grid;
   place-items: center;
+}
+
+.rb-geo-list {
+  list-style: none;
+  margin: 0.7rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.rb-geo-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.45rem;
+  font-size: 0.86rem;
+}
+
+.rb-global-metrics {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.6rem;
+  margin-bottom: 0.8rem;
+}
+
+.rb-global-metrics article {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #0f1728;
+  padding: 0.65rem;
+  display: grid;
+  gap: 0.22rem;
+}
+
+.rb-global-metrics span {
+  font-size: 0.8rem;
+  color: #98a8be;
+}
+
+.rb-global-metrics strong {
+  font-size: 1rem;
+}
+
+.rb-global-lists {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .rb-stat-list {
@@ -696,6 +731,14 @@ button:disabled {
   .rb-overview-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .rb-global-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .rb-global-lists {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 720px) {
@@ -721,6 +764,10 @@ button:disabled {
   }
 
   .rb-overview-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .rb-global-metrics {
     grid-template-columns: 1fr;
   }
 }

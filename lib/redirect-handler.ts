@@ -101,13 +101,6 @@ async function handleLegacyRedirectRequest(request: NextRequest, slug: string | 
   });
 }
 
-function applyWarningHeader(response: NextResponse, shouldWarn: boolean): NextResponse {
-  if (shouldWarn) {
-    response.headers.set("x-tracking-warning", "data may not be fully accurate");
-  }
-  return response;
-}
-
 export async function handleRedirectRequest(request: NextRequest, slug: string | null): Promise<NextResponse> {
   const normalizedSlug = slug ? normalizeSlug(slug) : null;
   if (!normalizedSlug) {
@@ -149,38 +142,30 @@ export async function handleRedirectRequest(request: NextRequest, slug: string |
     finalUrl = mergeQueryParams(env.DEFAULT_REDIRECT_URL, request.nextUrl.searchParams);
   }
 
-  let limitReached = false;
   try {
     const settings = await getAdminSettings();
-    limitReached = settings.limitReached;
 
     if (settings.trackingEnabled) {
-      const shouldTrack = !settings.limitReached || settings.limitBehavior === "minimal";
-      if (shouldTrack) {
-        const unique = await isUniqueClick(shortLink.id, ipHash).catch(() => true);
-        await insertClickEvent(
-          {
-            linkId: shortLink.id,
-            slug: shortLink.slug,
-            referrer: referer,
-            ua: userAgent,
-            ipHash,
-            country: geo.country,
-            region: geo.region,
-            city: geo.city,
-            device: uaProfile.device,
-            os: uaProfile.os,
-            browser: uaProfile.browser,
-            platform: uaProfile.platform,
-            language,
-            queryParams: extractQueryParams(request.nextUrl.searchParams),
-            isUnique: unique,
-            source,
-            utm: extractUtmParams(request.nextUrl.searchParams)
-          },
-          settings.limitReached && settings.limitBehavior === "minimal"
-        );
-      }
+      const unique = await isUniqueClick(shortLink.id, ipHash).catch(() => true);
+      await insertClickEvent({
+        linkId: shortLink.id,
+        slug: shortLink.slug,
+        referrer: referer,
+        ua: userAgent,
+        ipHash,
+        country: geo.country,
+        region: geo.region,
+        city: geo.city,
+        device: uaProfile.device,
+        os: uaProfile.os,
+        browser: uaProfile.browser,
+        platform: uaProfile.platform,
+        language,
+        queryParams: extractQueryParams(request.nextUrl.searchParams),
+        isUnique: unique,
+        source,
+        utm: extractUtmParams(request.nextUrl.searchParams)
+      });
     }
   } catch (error) {
     console.error("Click tracking failed", error);
@@ -195,11 +180,10 @@ export async function handleRedirectRequest(request: NextRequest, slug: string |
         "cache-control": "no-store, no-cache, must-revalidate"
       }
     });
-    return applyWarningHeader(response, limitReached);
+    return response;
   }
 
-  const response = NextResponse.redirect(finalUrl, {
+  return NextResponse.redirect(finalUrl, {
     status: shortLink.redirectType
   });
-  return applyWarningHeader(response, limitReached);
 }

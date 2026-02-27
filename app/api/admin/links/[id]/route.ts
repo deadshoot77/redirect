@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isAdminRequest } from "@/lib/auth";
-import { getAdminSettings, getLinkAnalyticsData, getShortLinkById, updateShortLink } from "@/lib/links";
+import { getLinkAnalyticsData, getShortLinkById, updateShortLink } from "@/lib/links";
 import { shortLinkPatchSchema } from "@/lib/validation";
 
 export const runtime = "nodejs";
@@ -34,8 +34,8 @@ export async function GET(request: NextRequest, { params }: Params) {
       return NextResponse.json({ link });
     }
 
-    const [analytics, settings] = await Promise.all([getLinkAnalyticsData(resolved.id), getAdminSettings()]);
-    return NextResponse.json({ link, analytics, settings });
+    const analytics = await getLinkAnalyticsData(resolved.id);
+    return NextResponse.json({ link, analytics });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Failed to fetch link" },

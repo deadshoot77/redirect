@@ -21,10 +21,121 @@ export interface GeoData {
   city: string | null;
 }
 
+interface ParsedNetlifyGeoData {
+  country: string | null;
+  region: string | null;
+  city: string | null;
+}
+
 function normalizeToken(value: string | null | undefined, fallback = "unknown"): string {
   if (!value) return fallback;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : fallback;
+}
+
+function toNullableToken(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function parseJsonObject(value: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeBase64(value: string): string {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padding = normalized.length % 4;
+  if (padding === 0) return normalized;
+  return normalized.padEnd(normalized.length + (4 - padding), "=");
+}
+
+function decodeBase64(value: string): string | null {
+  try {
+    return Buffer.from(normalizeBase64(value), "base64").toString("utf8");
+  } catch {
+    return null;
+  }
+}
+
+function extractCountryCode(value: unknown): string | null {
+  if (!value) return null;
+  if (typeof value === "string") return toNullableToken(value);
+  if (typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  return (
+    toNullableToken(raw.code) ??
+    toNullableToken(raw.iso_code) ??
+    toNullableToken(raw.country_code) ??
+    toNullableToken(raw.alpha2) ??
+    toNullableToken(raw.alpha3)
+  );
+}
+
+function extractRegion(value: unknown): string | null {
+  if (!value) return null;
+  if (typeof value === "string") return toNullableToken(value);
+  if (typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  return toNullableToken(raw.code) ?? toNullableToken(raw.name);
+}
+
+function parseNetlifyGeoHeader(rawHeader: string | null): ParsedNetlifyGeoData | null {
+  if (!rawHeader) return null;
+  const trimmed = rawHeader.trim();
+  if (!trimmed) return null;
+
+  const jsonCandidates = [trimmed];
+  let decodedUriValue: string | null = null;
+  try {
+    const decodedUri = decodeURIComponent(trimmed);
+    if (decodedUri !== trimmed) {
+      jsonCandidates.push(decodedUri);
+      decodedUriValue = decodedUri;
+    }
+  } catch {
+    // ignore malformed URI payloads
+  }
+
+  const decodedBase64 = decodeBase64(trimmed);
+  if (decodedBase64) {
+    jsonCandidates.push(decodedBase64);
+  }
+  if (decodedUriValue) {
+    const decodedBase64FromUri = decodeBase64(decodedUriValue);
+    if (decodedBase64FromUri) {
+      jsonCandidates.push(decodedBase64FromUri);
+    }
+  }
+
+  for (const candidate of jsonCandidates) {
+    const parsed = parseJsonObject(candidate);
+    if (!parsed) {
+      continue;
+    }
+    const country =
+      extractCountryCode(parsed.country) ??
+      toNullableToken(parsed.country_code) ??
+      toNullableToken(parsed.countryCode);
+    const region =
+      toNullableToken(parsed.region) ??
+      toNullableToken(parsed.region_code) ??
+      extractRegion(parsed.subdivision) ??
+      toNullableToken(parsed.state);
+    const city = toNullableToken(parsed.city);
+
+    return { country, region, city };
+  }
+
+  return null;
 }
 
 function detectOs(userAgent: string): string {
@@ -67,6 +178,9 @@ export function getClientIp(request: NextRequest): string | null {
 
   const cfConnectingIp = request.headers.get("cf-connecting-ip")?.trim();
   if (cfConnectingIp) return cfConnectingIp;
+
+  const netlifyIp = request.headers.get("x-nf-client-connection-ip")?.trim();
+  if (netlifyIp) return netlifyIp;
 
   return null;
 }
@@ -122,6 +236,9 @@ export function getCountryCode(request: NextRequest): string {
   const fromCloudflare = request.headers.get("cf-ipcountry");
   if (fromCloudflare) return fromCloudflare.toUpperCase();
 
+  const fromNetlify = request.headers.get("x-nf-country");
+  if (fromNetlify) return fromNetlify.toUpperCase();
+
   const fallback = request.headers.get("x-country-code");
   if (fallback) return fallback.toUpperCase();
 
@@ -129,12 +246,20 @@ export function getCountryCode(request: NextRequest): string {
 }
 
 export function getGeoData(request: NextRequest): GeoData {
-  const country = getCountryCode(request);
+  const netlifyGeo = parseNetlifyGeoHeader(request.headers.get("x-nf-geo"));
+  const country = normalizeToken(netlifyGeo?.country ?? getCountryCode(request), "UNK").toUpperCase();
   const region =
+    netlifyGeo?.region ??
     request.headers.get("x-vercel-ip-country-region") ??
     request.headers.get("cf-region") ??
+    request.headers.get("cf-region-code") ??
     request.headers.get("x-region");
-  const city = request.headers.get("x-vercel-ip-city") ?? request.headers.get("cf-ipcity") ?? request.headers.get("x-city");
+  const city =
+    netlifyGeo?.city ??
+    request.headers.get("x-vercel-ip-city") ??
+    request.headers.get("cf-ipcity") ??
+    request.headers.get("cf-city") ??
+    request.headers.get("x-city");
 
   return {
     country,

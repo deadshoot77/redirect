@@ -48,10 +48,7 @@ export async function PATCH(request: NextRequest) {
 
   try {
     await updateAdminSettings({
-      plan: parsed.data.plan,
-      clickLimitMonthly: parsed.data.click_limit_monthly,
-      trackingEnabled: parsed.data.tracking_enabled,
-      limitBehavior: parsed.data.limit_behavior
+      trackingEnabled: parsed.data.tracking_enabled
     });
     const settings = await getAdminSettings();
     return NextResponse.json({ settings });

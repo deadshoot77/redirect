@@ -3,14 +3,98 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import AdminCharts from "@/components/admin-charts";
+import AdminLanguageToggle from "@/components/admin-language-toggle";
 import type { LinkAnalyticsData } from "@/lib/links";
-import type { AdminSettings, DeepLinksConfig, RoutingRule, ShortLink } from "@/lib/types";
+import { ADMIN_LANG_STORAGE_KEY, normalizeAdminLang, type AdminLang } from "@/lib/i18n";
+import type { DeepLinksConfig, RoutingRule, ShortLink } from "@/lib/types";
 
 interface LinkDetailPageClientProps {
   initialLink: ShortLink;
   initialAnalytics: LinkAnalyticsData;
-  initialSettings: AdminSettings;
 }
+
+const words = {
+  fr: {
+    backToLinks: "Retour aux liens",
+    detailSubtitle: "Detail du lien et rapport analytique",
+    languageToggleAria: "Basculer la langue",
+    copyShortLink: "Copier le lien court",
+    optimize: "Optimiser",
+    utmBuilder: "Constructeur UTM",
+    utmSource: "UTM Source",
+    utmMedium: "UTM Medium",
+    utmCampaign: "UTM Campaign",
+    utmContent: "UTM Content",
+    utmTerm: "UTM Term",
+    applyDestination: "Appliquer a la destination",
+    copyUrl: "Copier l'URL",
+    trafficRouting: "Routage du trafic",
+    routingHint: "Configurez un tableau JSON avec `devices`, `countries`, `languages` et `destination_url`.",
+    saveRouting: "Sauvegarder les regles",
+    deepLinks: "Deep links",
+    iosLink: "Lien iOS",
+    androidLink: "Lien Android",
+    fallbackUrl: "URL de secours",
+    saveDeepLinks: "Sauvegarder deep links",
+    retargetingScripts: "Scripts de retargeting",
+    retargetingHint: "Tableau JSON. Exemple: type inline/external/pixel, avec content ou src.",
+    saveScripts: "Sauvegarder les scripts",
+    report: "Rapport",
+    linkPreview: "Apercu du lien",
+    openDestination: "Ouvrir la destination",
+    qrCode: "QR Code",
+    download: "Telecharger",
+    copyImageUrl: "Copier URL image",
+    bestShareTime: "Meilleur moment pour partager ce lien",
+    notEnoughData: "Pas assez de donnees.",
+    shareWith: "Partager avec",
+    saved: "Sauvegarde effectuee",
+    failedSave: "Echec de sauvegarde",
+    copiedClipboard: "Copie dans le presse-papiers",
+    invalidRoutingJson: "JSON de routage invalide",
+    invalidRetargetingJson: "JSON de retargeting invalide"
+  },
+  en: {
+    backToLinks: "Back to Links",
+    detailSubtitle: "Link detail and analytics report",
+    languageToggleAria: "Toggle language",
+    copyShortLink: "Copy short link",
+    optimize: "Optimize",
+    utmBuilder: "UTM Builder",
+    utmSource: "UTM Source",
+    utmMedium: "UTM Medium",
+    utmCampaign: "UTM Campaign",
+    utmContent: "UTM Content",
+    utmTerm: "UTM Term",
+    applyDestination: "Apply to destination",
+    copyUrl: "Copy URL",
+    trafficRouting: "Traffic routing",
+    routingHint: "Configure JSON array with `devices`, `countries`, `languages` and `destination_url`.",
+    saveRouting: "Save routing rules",
+    deepLinks: "Deep links",
+    iosLink: "iOS app link",
+    androidLink: "Android app link",
+    fallbackUrl: "Fallback web URL",
+    saveDeepLinks: "Save deep links",
+    retargetingScripts: "Retargeting scripts",
+    retargetingHint: "JSON array. Example: type inline/external/pixel, plus content or src.",
+    saveScripts: "Save scripts",
+    report: "Report",
+    linkPreview: "Link preview",
+    openDestination: "Open destination",
+    qrCode: "QR Code",
+    download: "Download",
+    copyImageUrl: "Copy image URL",
+    bestShareTime: "Best time to share your link",
+    notEnoughData: "Not enough data yet.",
+    shareWith: "Share with",
+    saved: "Saved",
+    failedSave: "Failed to save",
+    copiedClipboard: "Copied to clipboard",
+    invalidRoutingJson: "Invalid routing rules JSON",
+    invalidRetargetingJson: "Invalid retargeting JSON"
+  }
+} as const;
 
 function toPrettyJson(value: unknown): string {
   try {
@@ -53,15 +137,12 @@ function toErrorMessage(payload: unknown, fallback: string): string {
   return candidate.error ?? fallback;
 }
 
-export default function LinkDetailPageClient({
-  initialLink,
-  initialAnalytics,
-  initialSettings
-}: LinkDetailPageClientProps) {
+export default function LinkDetailPageClient({ initialLink, initialAnalytics }: LinkDetailPageClientProps) {
   const [link, setLink] = useState<ShortLink>(initialLink);
   const [analytics] = useState<LinkAnalyticsData>(initialAnalytics);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [lang, setLang] = useState<AdminLang>("fr");
   const [routingRulesJson, setRoutingRulesJson] = useState(() => toPrettyJson(link.routingRules));
   const [retargetingJson, setRetargetingJson] = useState(() => toPrettyJson(link.retargetingScripts));
   const [deepLinks, setDeepLinks] = useState<DeepLinksConfig>(link.deepLinks ?? {});
@@ -74,8 +155,11 @@ export default function LinkDetailPageClient({
 
   useEffect(() => {
     setOrigin(window.location.origin);
+    const stored = normalizeAdminLang(window.localStorage.getItem(ADMIN_LANG_STORAGE_KEY));
+    setLang(stored);
   }, []);
 
+  const copy = words[lang];
   const shortUrl = `${origin}/${link.slug}`;
 
   const qrUrl = useMemo(() => {
@@ -98,6 +182,12 @@ export default function LinkDetailPageClient({
 
   const bestHours = useMemo(() => getTopShareHours(analytics.popularHours), [analytics.popularHours]);
 
+  function toggleLanguage() {
+    const nextLang: AdminLang = lang === "fr" ? "en" : "fr";
+    setLang(nextLang);
+    window.localStorage.setItem(ADMIN_LANG_STORAGE_KEY, nextLang);
+  }
+
   async function savePatch(payload: Record<string, unknown>) {
     setSaving(true);
     setFeedback(null);
@@ -112,12 +202,12 @@ export default function LinkDetailPageClient({
       });
       const body = (await response.json().catch(() => null)) as { link?: ShortLink; error?: string } | null;
       if (!response.ok || !body?.link) {
-        throw new Error(toErrorMessage(body, "Failed to save"));
+        throw new Error(toErrorMessage(body, copy.failedSave));
       }
       setLink(body.link);
-      setFeedback("Saved");
+      setFeedback(copy.saved);
     } catch (error) {
-      setFeedback(error instanceof Error ? error.message : "Failed to save");
+      setFeedback(error instanceof Error ? error.message : copy.failedSave);
     } finally {
       setSaving(false);
     }
@@ -136,7 +226,7 @@ export default function LinkDetailPageClient({
         routing_rules: parsed
       });
     } catch (error) {
-      setFeedback(error instanceof Error ? error.message : "Invalid routing rules JSON");
+      setFeedback(error instanceof Error ? error.message : copy.invalidRoutingJson);
     }
   }
 
@@ -153,13 +243,13 @@ export default function LinkDetailPageClient({
         retargeting_scripts: parsed
       });
     } catch (error) {
-      setFeedback(error instanceof Error ? error.message : "Invalid retargeting JSON");
+      setFeedback(error instanceof Error ? error.message : copy.invalidRetargetingJson);
     }
   }
 
   async function onCopy(value: string) {
     await navigator.clipboard.writeText(value);
-    setFeedback("Copied to clipboard");
+    setFeedback(copy.copiedClipboard);
   }
 
   return (
@@ -167,15 +257,15 @@ export default function LinkDetailPageClient({
       <header className="rb-header">
         <div>
           <Link className="rb-back" href="/admin/links">
-            ← Back to Links
+            ← {copy.backToLinks}
           </Link>
           <h1>/{link.slug}</h1>
-          <p className="rb-muted">Link detail and analytics report</p>
+          <p className="rb-muted">{copy.detailSubtitle}</p>
         </div>
         <div className="rb-header-actions">
-          <span className="rb-plan-pill">Plan: {initialSettings.plan.toUpperCase()}</span>
+          <AdminLanguageToggle lang={lang} onToggle={toggleLanguage} ariaLabel={copy.languageToggleAria} />
           <button type="button" className="rb-primary" disabled={saving} onClick={() => void onCopy(shortUrl)}>
-            Copy short link
+            {copy.copyShortLink}
           </button>
         </div>
       </header>
@@ -185,48 +275,46 @@ export default function LinkDetailPageClient({
       <section className="rb-link-detail-layout">
         <div className="rb-link-detail-main">
           <article className="rb-panel">
-            <h2>Optimize</h2>
+            <h2>{copy.optimize}</h2>
 
             <details open className="rb-accordion">
-              <summary>UTM Builder</summary>
+              <summary>{copy.utmBuilder}</summary>
               <div className="rb-form-grid">
                 <label htmlFor="utm_source">
-                  UTM Source
+                  {copy.utmSource}
                   <input id="utm_source" value={utmSource} onChange={(event) => setUtmSource(event.target.value)} />
                 </label>
                 <label htmlFor="utm_medium">
-                  UTM Medium
+                  {copy.utmMedium}
                   <input id="utm_medium" value={utmMedium} onChange={(event) => setUtmMedium(event.target.value)} />
                 </label>
                 <label htmlFor="utm_campaign">
-                  UTM Campaign
+                  {copy.utmCampaign}
                   <input id="utm_campaign" value={utmCampaign} onChange={(event) => setUtmCampaign(event.target.value)} />
                 </label>
                 <label htmlFor="utm_content">
-                  UTM Content
+                  {copy.utmContent}
                   <input id="utm_content" value={utmContent} onChange={(event) => setUtmContent(event.target.value)} />
                 </label>
                 <label htmlFor="utm_term">
-                  UTM Term
+                  {copy.utmTerm}
                   <input id="utm_term" value={utmTerm} onChange={(event) => setUtmTerm(event.target.value)} />
                 </label>
               </div>
               <p className="rb-muted rb-url-preview">{utmPreview}</p>
               <div className="rb-actions">
                 <button type="button" className="rb-primary" disabled={saving} onClick={() => void onApplyUtm()}>
-                  Apply to destination
+                  {copy.applyDestination}
                 </button>
                 <button type="button" onClick={() => void onCopy(utmPreview)}>
-                  Copy URL
+                  {copy.copyUrl}
                 </button>
               </div>
             </details>
 
             <details className="rb-accordion">
-              <summary>Traffic routing</summary>
-              <p className="rb-muted">
-                Configure JSON array with conditions `devices`, `countries`, `languages` and `destination_url`.
-              </p>
+              <summary>{copy.trafficRouting}</summary>
+              <p className="rb-muted">{copy.routingHint}</p>
               <textarea
                 className="rb-code-area"
                 value={routingRulesJson}
@@ -234,16 +322,16 @@ export default function LinkDetailPageClient({
               />
               <div className="rb-actions">
                 <button type="button" className="rb-primary" disabled={saving} onClick={() => void onSaveRoutingRules()}>
-                  Save routing rules
+                  {copy.saveRouting}
                 </button>
               </div>
             </details>
 
             <details className="rb-accordion">
-              <summary>Deep links</summary>
+              <summary>{copy.deepLinks}</summary>
               <div className="rb-form-grid">
                 <label htmlFor="deep_ios">
-                  iOS app link
+                  {copy.iosLink}
                   <input
                     id="deep_ios"
                     value={deepLinks.ios_url ?? ""}
@@ -251,7 +339,7 @@ export default function LinkDetailPageClient({
                   />
                 </label>
                 <label htmlFor="deep_android">
-                  Android app link
+                  {copy.androidLink}
                   <input
                     id="deep_android"
                     value={deepLinks.android_url ?? ""}
@@ -259,7 +347,7 @@ export default function LinkDetailPageClient({
                   />
                 </label>
                 <label htmlFor="deep_fallback">
-                  Fallback web URL
+                  {copy.fallbackUrl}
                   <input
                     id="deep_fallback"
                     value={deepLinks.fallback_url ?? ""}
@@ -269,14 +357,14 @@ export default function LinkDetailPageClient({
               </div>
               <div className="rb-actions">
                 <button type="button" className="rb-primary" disabled={saving} onClick={() => void onSaveDeepLinks()}>
-                  Save deep links
+                  {copy.saveDeepLinks}
                 </button>
               </div>
             </details>
 
             <details className="rb-accordion">
-              <summary>Retargeting scripts</summary>
-              <p className="rb-muted">JSON array. Example: type inline/external/pixel, plus content or src.</p>
+              <summary>{copy.retargetingScripts}</summary>
+              <p className="rb-muted">{copy.retargetingHint}</p>
               <textarea
                 className="rb-code-area"
                 value={retargetingJson}
@@ -284,17 +372,17 @@ export default function LinkDetailPageClient({
               />
               <div className="rb-actions">
                 <button type="button" className="rb-primary" disabled={saving} onClick={() => void onSaveRetargeting()}>
-                  Save scripts
+                  {copy.saveScripts}
                 </button>
               </div>
             </details>
           </article>
 
           <section className="rb-panel">
-            <h2>Report</h2>
+            <h2>{copy.report}</h2>
             <AdminCharts
               mode="rebrandly"
-              plan={initialSettings.plan}
+              lang={lang}
               overview={analytics.overview}
               timeseries={analytics.timeseries}
               worldMap={analytics.worldMap}
@@ -315,31 +403,31 @@ export default function LinkDetailPageClient({
 
         <aside className="rb-link-detail-side">
           <article className="rb-panel">
-            <h3>Link preview</h3>
+            <h3>{copy.linkPreview}</h3>
             <p className="rb-link-preview-short">{shortUrl}</p>
             <p className="rb-muted">{link.destinationUrl}</p>
             <a href={link.destinationUrl} target="_blank" rel="noreferrer">
-              Open destination
+              {copy.openDestination}
             </a>
           </article>
 
           <article className="rb-panel">
-            <h3>QR Code</h3>
+            <h3>{copy.qrCode}</h3>
             <img src={qrUrl} alt={`QR code for ${shortUrl}`} className="rb-qr-image" />
             <div className="rb-actions">
               <a href={qrUrl} download={`qr-${link.slug}.png`}>
-                Download
+                {copy.download}
               </a>
               <button type="button" onClick={() => void onCopy(qrUrl)}>
-                Copy image URL
+                {copy.copyImageUrl}
               </button>
             </div>
           </article>
 
           <article className="rb-panel">
-            <h3>Best time to share your link</h3>
+            <h3>{copy.bestShareTime}</h3>
             {bestHours.length === 0 ? (
-              <p className="rb-muted">Not enough data yet.</p>
+              <p className="rb-muted">{copy.notEnoughData}</p>
             ) : (
               <ul className="rb-best-hours">
                 {bestHours.map((hour) => (
@@ -350,7 +438,7 @@ export default function LinkDetailPageClient({
           </article>
 
           <article className="rb-panel">
-            <h3>Share with</h3>
+            <h3>{copy.shareWith}</h3>
             <div className="rb-share-grid">
               <button type="button">Facebook</button>
               <button type="button">Instagram</button>
