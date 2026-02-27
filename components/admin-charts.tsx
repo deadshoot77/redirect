@@ -1,7 +1,10 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Bar, Doughnut, Line } from "react-chartjs-2";
+import { geoMercator, geoPath } from "d3-geo";
+import countries from "i18n-iso-countries";
+import countriesEn from "i18n-iso-countries/langs/en.json";
 import {
   ArcElement,
   BarElement,
@@ -17,6 +20,8 @@ import {
 import type { DailyPoint, HourlyPoint, LabelCount as LegacyLabelCount } from "@/lib/analytics";
 import type { AdminLang } from "@/lib/i18n";
 import type { AnalyticsGranularity, LinkOverviewStats, TimeSeriesPoint } from "@/lib/types";
+
+countries.registerLocale(countriesEn);
 
 ChartJS.register(
   CategoryScale,
@@ -34,6 +39,16 @@ interface LabelCount {
   label: string;
   clicks: number;
 }
+
+interface WorldGeoFeature {
+  id?: string | number;
+  properties?: {
+    name?: string;
+  };
+}
+
+let worldGeoFeaturesCache: WorldGeoFeature[] | null = null;
+let worldGeoFeaturesPromise: Promise<WorldGeoFeature[]> | null = null;
 
 interface LegacyChartsProps {
   mode?: "legacy";
@@ -95,7 +110,8 @@ const rebrandlyWords = {
     topBrowsers: "Top navigateurs",
     topDevices: "Top appareils",
     topLanguages: "Top langues",
-    topPlatforms: "Top plateformes"
+    topPlatforms: "Top plateformes",
+    loadingMap: "Chargement de la carte..."
   },
   en: {
     noData: "No data yet.",
@@ -121,7 +137,8 @@ const rebrandlyWords = {
     topBrowsers: "Top browsers",
     topDevices: "Top devices",
     topLanguages: "Top languages",
-    topPlatforms: "Top platforms"
+    topPlatforms: "Top platforms",
+    loadingMap: "Loading map..."
   }
 } as const;
 
@@ -139,6 +156,127 @@ function formatLastClick(value: string | null, lang: AdminLang): string {
     hour: "2-digit",
     minute: "2-digit"
   });
+}
+
+function normalizeCountryCode(input: string): string | null {
+  const value = input.trim().toUpperCase();
+  if (!value || value === "UNK" || value === "UNKNOWN") return null;
+  if (/^[A-Z]{3}$/.test(value)) return value;
+  if (/^[A-Z]{2}$/.test(value)) {
+    return countries.alpha2ToAlpha3(value) ?? null;
+  }
+  return null;
+}
+
+function toCountryName(label: string, lang: AdminLang): string {
+  const normalized = label.trim();
+  if (!normalized) return "Unknown";
+  const upper = normalized.toUpperCase();
+  if (upper === "UNK" || upper === "UNKNOWN") return "Unknown";
+
+  const alpha2 = upper.length === 2 ? upper : countries.alpha3ToAlpha2(upper);
+  if (!alpha2) return normalized;
+
+  const formatter = new Intl.DisplayNames([lang === "fr" ? "fr" : "en"], { type: "region" });
+  return formatter.of(alpha2) ?? normalized;
+}
+
+function mapHeatColor(clicks: number, max: number): string {
+  if (clicks <= 0 || max <= 0) {
+    return "#3f464d";
+  }
+  const ratio = Math.max(0, Math.min(1, clicks / max));
+  const eased = Math.pow(ratio, 0.6);
+  const red = Math.round(107 + (255 - 107) * eased);
+  const green = Math.round(72 + (146 - 72) * eased);
+  const blue = Math.round(43 + (32 - 43) * eased);
+  return `rgb(${red}, ${green}, ${blue})`;
+}
+
+async function loadWorldGeoFeatures(): Promise<WorldGeoFeature[]> {
+  if (worldGeoFeaturesCache) return worldGeoFeaturesCache;
+  if (!worldGeoFeaturesPromise) {
+    worldGeoFeaturesPromise = fetch("/world.geojson", { cache: "force-cache" })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((json) => {
+        const features = Array.isArray((json as { features?: unknown[] } | null)?.features)
+          ? (((json as { features: unknown[] }).features as unknown[]) ?? [])
+          : [];
+        const mapped = features.filter((entry) => entry && typeof entry === "object") as WorldGeoFeature[];
+        worldGeoFeaturesCache = mapped;
+        return mapped;
+      })
+      .catch(() => []);
+  }
+  return worldGeoFeaturesPromise;
+}
+
+function WorldHeatMap({ data, lang }: { data: LabelCount[]; lang: AdminLang }) {
+  const [features, setFeatures] = useState<WorldGeoFeature[]>(() => worldGeoFeaturesCache ?? []);
+  const copy = rebrandlyWords[lang];
+
+  useEffect(() => {
+    let active = true;
+    void loadWorldGeoFeatures().then((mapped) => {
+      if (!active) return;
+      setFeatures(mapped);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const clicksByCountryCode = useMemo(() => {
+    const output = new Map<string, number>();
+    for (const entry of data) {
+      const code = normalizeCountryCode(entry.label);
+      if (!code) continue;
+      output.set(code, entry.clicks);
+    }
+    return output;
+  }, [data]);
+
+  const maxClicks = useMemo(() => {
+    let max = 0;
+    for (const value of clicksByCountryCode.values()) {
+      if (value > max) max = value;
+    }
+    return max;
+  }, [clicksByCountryCode]);
+
+  const pathGenerator = useMemo(() => {
+    if (features.length === 0) return null;
+    const projection = geoMercator().fitSize([1000, 470], {
+      type: "FeatureCollection",
+      features
+    } as any);
+    return geoPath(projection);
+  }, [features]);
+
+  return (
+    <div className="rb-world-map">
+      {!pathGenerator ? (
+        <p className="rb-muted">{copy.loadingMap}</p>
+      ) : (
+        <svg viewBox="0 0 1000 470" aria-label={copy.geoDistribution}>
+          <rect x="0" y="0" width="1000" height="470" fill="#070b10" />
+          {features.map((feature, index) => {
+            const iso3 = typeof feature.id === "string" ? feature.id.toUpperCase() : "";
+            const clicks = iso3 ? clicksByCountryCode.get(iso3) ?? 0 : 0;
+            const path = pathGenerator(feature as any);
+            if (!path) return null;
+            return (
+              <path key={`${iso3 || "country"}-${index}`} d={path} fill={mapHeatColor(clicks, maxClicks)} stroke="#5f6670" strokeWidth={0.45}>
+                <title>
+                  {toCountryName(iso3 || feature.properties?.name || "Unknown", lang)}: {formatNumber(clicks, lang)}
+                </title>
+              </path>
+            );
+          })}
+        </svg>
+      )}
+    </div>
+  );
 }
 
 function ListCard({
@@ -215,20 +353,6 @@ function RebrandlyCharts(props: RebrandlyChartsProps) {
     [props.clickType]
   );
 
-  const countryBars = useMemo(
-    () => ({
-      labels: props.worldMap.slice(0, 8).map((entry) => entry.label),
-      datasets: [
-        {
-          label: copy.clicks,
-          data: props.worldMap.slice(0, 8).map((entry) => entry.clicks),
-          backgroundColor: "#f97316"
-        }
-      ]
-    }),
-    [copy.clicks, props.worldMap]
-  );
-
   const worldTotal = useMemo(() => props.worldMap.reduce((sum, entry) => sum + entry.clicks, 0), [props.worldMap]);
 
   return (
@@ -303,26 +427,13 @@ function RebrandlyCharts(props: RebrandlyChartsProps) {
 
       <article className="rb-panel rb-analytics-card">
         <h3>{copy.geoDistribution}</h3>
-        <div className="rb-chart-box rb-chart-box-sm">
-          <Bar
-            data={countryBars}
-            options={{
-              responsive: true,
-              maintainAspectRatio: false,
-              plugins: { legend: { display: false } },
-              scales: {
-                x: { ticks: { color: "#9ca3af" }, grid: { display: false } },
-                y: { ticks: { color: "#9ca3af" }, grid: { color: "rgba(156,163,175,0.12)" } }
-              }
-            }}
-          />
-        </div>
+        <WorldHeatMap data={props.worldMap} lang={props.lang} />
         <ul className="rb-geo-list">
           {props.worldMap.slice(0, 6).map((entry) => {
             const share = worldTotal > 0 ? Math.round((entry.clicks / worldTotal) * 100) : 0;
             return (
               <li key={entry.label}>
-                <span>{entry.label}</span>
+                <span>{toCountryName(entry.label, props.lang)}</span>
                 <strong>
                   {formatNumber(entry.clicks, props.lang)} ({share}%)
                 </strong>

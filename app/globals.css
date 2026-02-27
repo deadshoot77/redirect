@@ -543,6 +543,22 @@ button:disabled {
   height: 220px;
 }
 
+.rb-world-map {
+  margin-top: 0.35rem;
+  border: 1px solid #2f3947;
+  border-radius: 12px;
+  background: #070b10;
+  overflow: hidden;
+  min-height: 280px;
+}
+
+.rb-world-map svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1000 / 470;
+}
+
 .rb-click-type-chart {
   min-height: 0;
   display: grid;
