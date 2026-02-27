@@ -2,14 +2,15 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import AdminCharts from "@/components/admin-charts";
 import AdminLanguageToggle from "@/components/admin-language-toggle";
 import LogoutButton from "@/components/logout-button";
-import type { GlobalLinksStats, PaginatedShortLinks } from "@/lib/links";
+import type { GlobalAnalyticsData, LinkAnalyticsData, PaginatedShortLinks } from "@/lib/links";
 import { ADMIN_LANG_STORAGE_KEY, normalizeAdminLang, type AdminLang } from "@/lib/i18n";
 
 interface AdminLinksPageClientProps {
   initialLinks: PaginatedShortLinks;
-  initialGlobalStats: GlobalLinksStats;
+  initialGlobalAnalytics: GlobalAnalyticsData;
 }
 
 type ViewMode = "list" | "grid";
@@ -60,6 +61,10 @@ const words = {
     tableCreationDate: "Date de creation",
     tableActions: "Actions",
     noLinksYet: "Aucun lien pour le moment.",
+    showStats: "Voir stats",
+    hideStats: "Masquer stats",
+    loadingStats: "Chargement des stats...",
+    linkStatsTitle: "Stats du lien",
     copy: "Copier",
     open: "Ouvrir",
     previous: "Precedent",
@@ -107,6 +112,10 @@ const words = {
     tableCreationDate: "Creation date",
     tableActions: "Actions",
     noLinksYet: "No links yet.",
+    showStats: "View stats",
+    hideStats: "Hide stats",
+    loadingStats: "Loading stats...",
+    linkStatsTitle: "Link stats",
     copy: "Copy",
     open: "Open",
     previous: "Previous",
@@ -180,9 +189,15 @@ function StatsList({
   );
 }
 
-export default function AdminLinksPageClient({ initialLinks, initialGlobalStats }: AdminLinksPageClientProps) {
+export default function AdminLinksPageClient({ initialLinks, initialGlobalAnalytics }: AdminLinksPageClientProps) {
   const [links, setLinks] = useState<PaginatedShortLinks>(initialLinks);
-  const [globalStats, setGlobalStats] = useState<GlobalLinksStats>(initialGlobalStats);
+  const [globalAnalytics, setGlobalAnalytics] = useState<GlobalAnalyticsData>(initialGlobalAnalytics);
+  const [linkAnalytics, setLinkAnalytics] = useState<Record<string, LinkAnalyticsData>>({});
+  const [activeLinkStats, setActiveLinkStats] = useState<{
+    id: string;
+    slug: string;
+  } | null>(null);
+  const [loadingLinkStatsId, setLoadingLinkStatsId] = useState<string | null>(null);
   const [lang, setLang] = useState<AdminLang>("fr");
   const [viewMode, setViewMode] = useState<ViewMode>("list");
   const [loading, setLoading] = useState(false);
@@ -202,14 +217,13 @@ export default function AdminLinksPageClient({ initialLinks, initialGlobalStats 
 
   const statsCards = useMemo(
     () => [
-      { label: copy.totalLinks, value: globalStats.totalLinks },
-      { label: copy.totalClicks, value: globalStats.totalClicks },
-      { label: copy.clicksToday, value: globalStats.clicksToday },
-      { label: copy.uniqueClicks, value: globalStats.uniqueClicks },
-      { label: copy.clicksLast7Days, value: globalStats.clicksLast7Days }
+      { label: copy.totalLinks, value: globalAnalytics.totalLinks },
+      { label: copy.clicksLast7Days, value: globalAnalytics.clicksLast7Days }
     ],
-    [copy.clicksLast7Days, copy.clicksToday, copy.totalClicks, copy.totalLinks, copy.uniqueClicks, globalStats]
+    [copy.clicksLast7Days, copy.totalLinks, globalAnalytics.clicksLast7Days, globalAnalytics.totalLinks]
   );
+
+  const activeLinkAnalytics = activeLinkStats ? linkAnalytics[activeLinkStats.id] : null;
 
   function toggleLanguage() {
     const nextLang: AdminLang = lang === "fr" ? "en" : "fr";
@@ -227,17 +241,17 @@ export default function AdminLinksPageClient({ initialLinks, initialGlobalStats 
       const payload = (await response.json().catch(() => null)) as
         | {
             links?: PaginatedShortLinks;
-            globalStats?: GlobalLinksStats;
+            globalAnalytics?: GlobalAnalyticsData;
             error?: string;
           }
         | null;
 
-      if (!response.ok || !payload?.links || !payload?.globalStats) {
+      if (!response.ok || !payload?.links || !payload?.globalAnalytics) {
         throw new Error(toErrorMessage(payload, "Failed to refresh links"));
       }
 
       setLinks(payload.links);
-      setGlobalStats(payload.globalStats);
+      setGlobalAnalytics(payload.globalAnalytics);
     } catch (error) {
       setFeedback(error instanceof Error ? error.message : "Failed to refresh links");
     } finally {
@@ -311,6 +325,43 @@ export default function AdminLinksPageClient({ initialLinks, initialGlobalStats 
     }
   }
 
+  async function toggleLinkStats(linkId: string, slug: string) {
+    if (activeLinkStats?.id === linkId) {
+      setActiveLinkStats(null);
+      return;
+    }
+
+    setActiveLinkStats({ id: linkId, slug });
+    if (linkAnalytics[linkId]) {
+      return;
+    }
+
+    setLoadingLinkStatsId(linkId);
+    try {
+      const response = await fetch(`/api/admin/links/${encodeURIComponent(linkId)}?includeAnalytics=1`, {
+        cache: "no-store",
+        credentials: "include"
+      });
+      const payload = (await response.json().catch(() => null)) as
+        | {
+            analytics?: LinkAnalyticsData;
+            error?: string;
+          }
+        | null;
+      if (!response.ok || !payload?.analytics) {
+        throw new Error(toErrorMessage(payload, "Failed to fetch link analytics"));
+      }
+      setLinkAnalytics((current) => ({
+        ...current,
+        [linkId]: payload.analytics as LinkAnalyticsData
+      }));
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : "Failed to fetch link analytics");
+    } finally {
+      setLoadingLinkStatsId((current) => (current === linkId ? null : current));
+    }
+  }
+
   async function copyLink(slug: string) {
     if (!origin) return;
     const full = `${origin}/${slug}`;
@@ -341,10 +392,26 @@ export default function AdminLinksPageClient({ initialLinks, initialGlobalStats 
             </article>
           ))}
         </div>
+        <AdminCharts
+          mode="rebrandly"
+          lang={lang}
+          overview={globalAnalytics.overview}
+          timeseries={globalAnalytics.timeseries}
+          worldMap={globalAnalytics.worldMap}
+          topCities={globalAnalytics.topCities}
+          topRegions={globalAnalytics.topRegions}
+          topDays={globalAnalytics.topDays}
+          popularHours={globalAnalytics.popularHours}
+          clickType={globalAnalytics.clickType}
+          topSocialPlatforms={globalAnalytics.topSocialPlatforms}
+          topSources={globalAnalytics.topSources}
+          topBrowsers={globalAnalytics.topBrowsers}
+          topDevices={globalAnalytics.topDevices}
+          topLanguages={globalAnalytics.topLanguages}
+          topPlatforms={globalAnalytics.topPlatforms}
+        />
         <div className="rb-report-grid rb-global-lists">
-          <StatsList title={copy.topLinks} items={globalStats.topLinks} lang={lang} />
-          <StatsList title={copy.topCountries} items={globalStats.topCountries} lang={lang} />
-          <StatsList title={copy.topSources} items={globalStats.topSources} lang={lang} />
+          <StatsList title={copy.topLinks} items={globalAnalytics.topLinks} lang={lang} />
         </div>
       </section>
 
@@ -480,6 +547,9 @@ export default function AdminLinksPageClient({ initialLinks, initialGlobalStats 
                         <button type="button" onClick={() => void copyLink(link.slug)}>
                           {copy.copy}
                         </button>
+                        <button type="button" onClick={() => void toggleLinkStats(link.id, link.slug)}>
+                          {activeLinkStats?.id === link.id ? copy.hideStats : copy.showStats}
+                        </button>
                         <button type="button" onClick={() => void toggleFavorite(link.id, link.isFavorite)}>
                           {link.isFavorite ? "★" : "☆"}
                         </button>
@@ -520,6 +590,9 @@ export default function AdminLinksPageClient({ initialLinks, initialGlobalStats 
                 <button type="button" onClick={() => void copyLink(link.slug)}>
                   {copy.copy}
                 </button>
+                <button type="button" onClick={() => void toggleLinkStats(link.id, link.slug)}>
+                  {activeLinkStats?.id === link.id ? copy.hideStats : copy.showStats}
+                </button>
                 <Link href={`/admin/links/${link.id}`} className="rb-button-link">
                   {copy.open}
                 </Link>
@@ -528,6 +601,38 @@ export default function AdminLinksPageClient({ initialLinks, initialGlobalStats 
           ))}
         </section>
       )}
+
+      {activeLinkStats ? (
+        <section className="rb-panel rb-link-inline-stats">
+          <h2>
+            {copy.linkStatsTitle} /{activeLinkStats.slug}
+          </h2>
+          {loadingLinkStatsId === activeLinkStats.id ? (
+            <p className="rb-muted">{copy.loadingStats}</p>
+          ) : activeLinkAnalytics ? (
+            <AdminCharts
+              mode="rebrandly"
+              lang={lang}
+              overview={activeLinkAnalytics.overview}
+              timeseries={activeLinkAnalytics.timeseries}
+              worldMap={activeLinkAnalytics.worldMap}
+              topCities={activeLinkAnalytics.topCities}
+              topRegions={activeLinkAnalytics.topRegions}
+              topDays={activeLinkAnalytics.topDays}
+              popularHours={activeLinkAnalytics.popularHours}
+              clickType={activeLinkAnalytics.clickType}
+              topSocialPlatforms={activeLinkAnalytics.topSocialPlatforms}
+              topSources={activeLinkAnalytics.topSources}
+              topBrowsers={activeLinkAnalytics.topBrowsers}
+              topDevices={activeLinkAnalytics.topDevices}
+              topLanguages={activeLinkAnalytics.topLanguages}
+              topPlatforms={activeLinkAnalytics.topPlatforms}
+            />
+          ) : (
+            <p className="rb-muted">{copy.noData}</p>
+          )}
+        </section>
+      ) : null}
 
       <footer className="rb-pagination">
         <button type="button" disabled={links.page <= 1 || loading} onClick={() => void refresh(links.page - 1)}>

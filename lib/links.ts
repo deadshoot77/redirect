@@ -114,6 +114,12 @@ export interface GlobalLinksStats {
   topSources: LabelCount[];
 }
 
+export interface GlobalAnalyticsData extends LinkAnalyticsData {
+  totalLinks: number;
+  clicksLast7Days: number;
+  topLinks: LabelCount[];
+}
+
 export interface CreateShortLinkInput {
   slug: string;
   destinationUrl: string;
@@ -164,9 +170,54 @@ interface ClickEventStatRow {
   slug: string | null;
   created_at: string;
   country: string | null;
+  region: string | null;
+  city: string | null;
+  browser: string | null;
+  device: string | null;
+  language: string | null;
+  platform: string | null;
   source: string | null;
   is_unique: boolean;
 }
+
+interface AggregatedGlobalAnalyticsData {
+  overview: LinkOverviewStats;
+  clicksLast7Days: number;
+  topLinks: LabelCount[];
+  timeseries: {
+    hours: TimeSeriesPoint[];
+    days: TimeSeriesPoint[];
+    months: TimeSeriesPoint[];
+  };
+  worldMap: LabelCount[];
+  topCities: LabelCount[];
+  topRegions: LabelCount[];
+  topDays: LabelCount[];
+  popularHours: LabelCount[];
+  clickType: LabelCount[];
+  topSocialPlatforms: LabelCount[];
+  topSources: LabelCount[];
+  topBrowsers: LabelCount[];
+  topDevices: LabelCount[];
+  topLanguages: LabelCount[];
+  topPlatforms: LabelCount[];
+}
+
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
+const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
+const SOCIAL_SOURCES = new Set([
+  "facebook",
+  "instagram",
+  "tiktok",
+  "twitter",
+  "x",
+  "linkedin",
+  "youtube",
+  "reddit",
+  "snapchat",
+  "pinterest"
+]);
 
 function toNumber(value: unknown): number {
   if (typeof value === "number") return value;
@@ -355,34 +406,135 @@ function normalizeSourceLabel(value: string | null): string {
   return normalized;
 }
 
-async function aggregateGlobalClickStats(
-  batchSize = 1000
-): Promise<Omit<GlobalLinksStats, "totalLinks">> {
+function normalizeGenericLabel(value: string | null): string {
+  const normalized = toString(value).trim();
+  return normalized.length > 0 ? normalized : "unknown";
+}
+
+function normalizeSocialSourceLabel(value: string | null): string {
+  const source = normalizeSourceLabel(value);
+  return SOCIAL_SOURCES.has(source) ? source : "other";
+}
+
+function incrementNumericCounter(counter: Map<number, number>, key: number): void {
+  counter.set(key, (counter.get(key) ?? 0) + 1);
+}
+
+function formatTwoDigits(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
+function startOfUtcHour(epochMs: number): number {
+  const date = new Date(epochMs);
+  date.setUTCMinutes(0, 0, 0);
+  return date.getTime();
+}
+
+function startOfUtcDay(epochMs: number): number {
+  const date = new Date(epochMs);
+  date.setUTCHours(0, 0, 0, 0);
+  return date.getTime();
+}
+
+function startOfUtcMonth(epochMs: number): number {
+  const date = new Date(epochMs);
+  date.setUTCDate(1);
+  date.setUTCHours(0, 0, 0, 0);
+  return date.getTime();
+}
+
+function buildHoursSeries(counter: Map<number, number>, start: number, end: number): TimeSeriesPoint[] {
+  const output: TimeSeriesPoint[] = [];
+  for (let bucket = start; bucket <= end; bucket += HOUR_MS) {
+    const date = new Date(bucket);
+    output.push({
+      bucketAt: date.toISOString(),
+      label: `${formatTwoDigits(date.getUTCHours())}:00`,
+      clicks: counter.get(bucket) ?? 0
+    });
+  }
+  return output;
+}
+
+function buildDaysSeries(counter: Map<number, number>, start: number, end: number): TimeSeriesPoint[] {
+  const output: TimeSeriesPoint[] = [];
+  for (let bucket = start; bucket <= end; bucket += DAY_MS) {
+    const date = new Date(bucket);
+    output.push({
+      bucketAt: date.toISOString(),
+      label: `${formatTwoDigits(date.getUTCMonth() + 1)}-${formatTwoDigits(date.getUTCDate())}`,
+      clicks: counter.get(bucket) ?? 0
+    });
+  }
+  return output;
+}
+
+function buildMonthsSeries(counter: Map<number, number>, start: number, points: number): TimeSeriesPoint[] {
+  const output: TimeSeriesPoint[] = [];
+  const cursor = new Date(start);
+  for (let index = 0; index < points; index += 1) {
+    const bucket = Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth(), 1);
+    output.push({
+      bucketAt: new Date(bucket).toISOString(),
+      label: `${cursor.getUTCFullYear()}-${formatTwoDigits(cursor.getUTCMonth() + 1)}`,
+      clicks: counter.get(bucket) ?? 0
+    });
+    cursor.setUTCMonth(cursor.getUTCMonth() + 1);
+  }
+  return output;
+}
+
+async function aggregateGlobalAnalytics(batchSize = 1000): Promise<AggregatedGlobalAnalyticsData> {
   const safeBatchSize = Math.max(100, Math.min(batchSize, 2000));
-  const now = new Date();
-  const utcTodayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-  const last7DaysStart = utcTodayStart - 6 * 24 * 60 * 60 * 1000;
+  const nowMs = Date.now();
+  const utcHourEnd = startOfUtcHour(nowMs);
+  const utcDayEnd = startOfUtcDay(nowMs);
+  const utcMonthEnd = startOfUtcMonth(nowMs);
+
+  const utcHourStart = utcHourEnd - 23 * HOUR_MS;
+  const utcDayStart = utcDayEnd - 29 * DAY_MS;
+  const monthStartDate = new Date(utcMonthEnd);
+  monthStartDate.setUTCMonth(monthStartDate.getUTCMonth() - 11);
+  const utcMonthStart = monthStartDate.getTime();
+
+  const utcTodayStart = utcDayEnd;
+  const last7DaysStart = utcTodayStart - 6 * DAY_MS;
 
   let totalClicks = 0;
   let clicksToday = 0;
   let clicksLast7Days = 0;
   let uniqueClicks = 0;
+  let nonUniqueClicks = 0;
+  let lastClickAt: string | null = null;
+  let lastClickAtMs = Number.NEGATIVE_INFINITY;
   let offset = 0;
   let batchCount = 0;
 
   const linksCounter = new Map<string, number>();
   const countriesCounter = new Map<string, number>();
+  const citiesCounter = new Map<string, number>();
+  const regionsCounter = new Map<string, number>();
+  const socialCounter = new Map<string, number>();
   const sourcesCounter = new Map<string, number>();
+  const browsersCounter = new Map<string, number>();
+  const devicesCounter = new Map<string, number>();
+  const languagesCounter = new Map<string, number>();
+  const platformsCounter = new Map<string, number>();
+  const hourSeriesCounter = new Map<number, number>();
+  const daySeriesCounter = new Map<number, number>();
+  const monthSeriesCounter = new Map<number, number>();
+  const dayBreakdown = Array.from({ length: DAY_LABELS.length }, () => 0);
+  const hourBreakdown = Array.from({ length: 24 }, () => 0);
 
   while (true) {
     const { data, error } = await getSupabaseAdminClient()
       .from("click_events")
-      .select("slug, created_at, country, source, is_unique")
+      .select("slug, created_at, country, region, city, source, browser, device, language, platform, is_unique")
       .order("created_at", { ascending: false })
       .range(offset, offset + safeBatchSize - 1);
 
     if (error) {
-      throw new Error(`aggregateGlobalClickStats failed: ${error.message}`);
+      throw new Error(`aggregateGlobalAnalytics failed: ${error.message}`);
     }
 
     const rows = (data ?? []) as ClickEventStatRow[];
@@ -394,19 +546,52 @@ async function aggregateGlobalClickStats(
       totalClicks += 1;
       if (row.is_unique) {
         uniqueClicks += 1;
+      } else {
+        nonUniqueClicks += 1;
       }
 
       incrementCounter(linksCounter, normalizeSlugLabel(row.slug));
       incrementCounter(countriesCounter, normalizeCountryLabel(row.country));
+      incrementCounter(citiesCounter, normalizeGenericLabel(row.city));
+      incrementCounter(regionsCounter, normalizeGenericLabel(row.region));
       incrementCounter(sourcesCounter, normalizeSourceLabel(row.source));
+      incrementCounter(socialCounter, normalizeSocialSourceLabel(row.source));
+      incrementCounter(browsersCounter, normalizeGenericLabel(row.browser).toLowerCase());
+      incrementCounter(devicesCounter, normalizeGenericLabel(row.device).toLowerCase());
+      incrementCounter(languagesCounter, normalizeGenericLabel(row.language).toLowerCase());
+      incrementCounter(platformsCounter, normalizeGenericLabel(row.platform).toLowerCase());
 
       const eventAt = Date.parse(toString(row.created_at));
       if (!Number.isNaN(eventAt)) {
+        if (eventAt > lastClickAtMs) {
+          lastClickAtMs = eventAt;
+          lastClickAt = new Date(eventAt).toISOString();
+        }
+
         if (eventAt >= utcTodayStart) {
           clicksToday += 1;
         }
         if (eventAt >= last7DaysStart) {
           clicksLast7Days += 1;
+        }
+
+        const eventDate = new Date(eventAt);
+        dayBreakdown[eventDate.getUTCDay()] += 1;
+        hourBreakdown[eventDate.getUTCHours()] += 1;
+
+        const hourBucket = startOfUtcHour(eventAt);
+        if (hourBucket >= utcHourStart && hourBucket <= utcHourEnd) {
+          incrementNumericCounter(hourSeriesCounter, hourBucket);
+        }
+
+        const dayBucket = startOfUtcDay(eventAt);
+        if (dayBucket >= utcDayStart && dayBucket <= utcDayEnd) {
+          incrementNumericCounter(daySeriesCounter, dayBucket);
+        }
+
+        const monthBucket = Date.UTC(eventDate.getUTCFullYear(), eventDate.getUTCMonth(), 1);
+        if (monthBucket >= utcMonthStart && monthBucket <= utcMonthEnd) {
+          incrementNumericCounter(monthSeriesCounter, monthBucket);
         }
       }
     }
@@ -422,30 +607,95 @@ async function aggregateGlobalClickStats(
     }
   }
 
-  return {
+  const topDays: LabelCount[] = DAY_LABELS.map((label, index) => ({
+    label,
+    clicks: dayBreakdown[index] ?? 0
+  }));
+
+  const popularHours: LabelCount[] = hourBreakdown.map((clicks, index) => ({
+    label: `${formatTwoDigits(index)}:00`,
+    clicks
+  }));
+
+  const overview: LinkOverviewStats = {
     totalClicks,
+    qrScans: 0,
     clicksToday,
-    clicksLast7Days,
+    lastClickAt,
     uniqueClicks,
+    nonUniqueClicks
+  };
+
+  return {
+    overview,
+    clicksLast7Days,
     topLinks: toSortedLabelCounts(linksCounter, 8),
-    topCountries: toSortedLabelCounts(countriesCounter, 8),
-    topSources: toSortedLabelCounts(sourcesCounter, 8)
+    timeseries: {
+      hours: buildHoursSeries(hourSeriesCounter, utcHourStart, utcHourEnd),
+      days: buildDaysSeries(daySeriesCounter, utcDayStart, utcDayEnd),
+      months: buildMonthsSeries(monthSeriesCounter, utcMonthStart, 12)
+    },
+    worldMap: toSortedLabelCounts(countriesCounter, 12),
+    topCities: toSortedLabelCounts(citiesCounter, 8),
+    topRegions: toSortedLabelCounts(regionsCounter, 8),
+    topDays,
+    popularHours,
+    clickType: [
+      { label: "Unique", clicks: uniqueClicks },
+      { label: "Non-Unique", clicks: nonUniqueClicks }
+    ],
+    topSocialPlatforms: toSortedLabelCounts(socialCounter, 8),
+    topSources: toSortedLabelCounts(sourcesCounter, 8),
+    topBrowsers: toSortedLabelCounts(browsersCounter, 8),
+    topDevices: toSortedLabelCounts(devicesCounter, 6),
+    topLanguages: toSortedLabelCounts(languagesCounter, 8),
+    topPlatforms: toSortedLabelCounts(platformsCounter, 8)
   };
 }
 
-export async function getGlobalLinksStats(): Promise<GlobalLinksStats> {
-  const [{ count, error }, clickStats] = await Promise.all([
+export async function getGlobalAnalyticsData(): Promise<GlobalAnalyticsData> {
+  const [{ count, error }, aggregated] = await Promise.all([
     getSupabaseAdminClient().from("short_links").select("id", { head: true, count: "exact" }).eq("is_active", true),
-    aggregateGlobalClickStats()
+    aggregateGlobalAnalytics()
   ]);
 
   if (error) {
-    throw new Error(`getGlobalLinksStats total links failed: ${error.message}`);
+    throw new Error(`getGlobalAnalyticsData total links failed: ${error.message}`);
   }
 
   return {
     totalLinks: toNumber(count ?? 0),
-    ...clickStats
+    clicksLast7Days: aggregated.clicksLast7Days,
+    topLinks: aggregated.topLinks,
+    overview: aggregated.overview,
+    timeseries: aggregated.timeseries,
+    worldMap: aggregated.worldMap,
+    topCities: aggregated.topCities,
+    topRegions: aggregated.topRegions,
+    topDays: aggregated.topDays,
+    popularHours: aggregated.popularHours,
+    clickType: aggregated.clickType,
+    topSocialPlatforms: aggregated.topSocialPlatforms,
+    topSources: aggregated.topSources,
+    topBrowsers: aggregated.topBrowsers,
+    topDevices: aggregated.topDevices,
+    topLanguages: aggregated.topLanguages,
+    topPlatforms: aggregated.topPlatforms
+  };
+}
+
+export async function getGlobalLinksStats(): Promise<GlobalLinksStats> {
+  const global = await getGlobalAnalyticsData();
+
+  return {
+    totalLinks: global.totalLinks,
+    totalClicks: global.overview.totalClicks,
+    clicksToday: global.overview.clicksToday,
+    clicksLast7Days: global.clicksLast7Days,
+    uniqueClicks: global.overview.uniqueClicks,
+    topLinks: global.topLinks,
+    topCountries: global.worldMap,
+    topSources: global.topSources
   };
 }
 

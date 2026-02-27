@@ -150,7 +150,7 @@ function ListCard({
   data: LabelCount[];
   lang: AdminLang;
 }) {
-  const max = data[0]?.clicks ?? 0;
+  const max = data.reduce((highest, item) => (item.clicks > highest ? item.clicks : highest), 0);
 
   return (
     <article className="rb-panel rb-analytics-card">
