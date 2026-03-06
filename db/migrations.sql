@@ -719,6 +719,7 @@ as $$
   order by p.created_at desc;
 $$;
 
+drop function if exists public.get_link_overview(uuid);
 create or replace function public.get_link_overview(p_link_id uuid)
 returns table (
   total_clicks bigint,
