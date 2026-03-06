@@ -997,10 +997,12 @@ where event_type is null or btrim(event_type) = '';
 
 update public.click_events
 set traffic_category = case
+  when coalesce(is_prefetch, false) = true then 'prefetch'
+  when coalesce(is_bot, false) = true then 'bot'
   when coalesce(device, '') = 'bot' then 'bot'
-  else 'unknown'
+  else 'human'
 end
-where traffic_category is null or btrim(traffic_category) = '';
+where traffic_category is null or btrim(traffic_category) = '' or traffic_category = 'unknown';
 
 do $$
 begin
@@ -1119,19 +1121,19 @@ as $$
       ce.link_id,
       count(*) filter (
         where ce.event_type = 'redirect'
-          and ce.traffic_category = 'human'
-          and ce.request_method = 'GET'
+          and coalesce(ce.request_method, 'GET') = 'GET'
+          and coalesce(ce.traffic_category, 'unknown') not in ('bot', 'prefetch')
       )::bigint as clicks_received,
       count(*) filter (
         where ce.event_type = 'redirect'
-          and ce.traffic_category = 'human'
-          and ce.request_method = 'GET'
+          and coalesce(ce.request_method, 'GET') = 'GET'
+          and coalesce(ce.traffic_category, 'unknown') not in ('bot', 'prefetch')
           and ce.created_at >= date_trunc('day', now())
       )::bigint as clicks_today,
       max(ce.created_at) filter (
         where ce.event_type = 'redirect'
-          and ce.traffic_category = 'human'
-          and ce.request_method = 'GET'
+          and coalesce(ce.request_method, 'GET') = 'GET'
+          and coalesce(ce.traffic_category, 'unknown') not in ('bot', 'prefetch')
       ) as last_click_at
     from public.click_events ce
     where ce.link_id in (select p.id from paged p)
@@ -1177,31 +1179,31 @@ as $$
   select
     count(*) filter (
       where ce.event_type = 'redirect'
-        and ce.traffic_category = 'human'
-        and ce.request_method = 'GET'
+        and coalesce(ce.request_method, 'GET') = 'GET'
+        and coalesce(ce.traffic_category, 'unknown') not in ('bot', 'prefetch')
     )::bigint as total_clicks,
     0::bigint as qr_scans,
     count(*) filter (
       where ce.event_type = 'redirect'
-        and ce.traffic_category = 'human'
-        and ce.request_method = 'GET'
+        and coalesce(ce.request_method, 'GET') = 'GET'
+        and coalesce(ce.traffic_category, 'unknown') not in ('bot', 'prefetch')
         and ce.created_at >= date_trunc('day', now())
     )::bigint as clicks_today,
     max(ce.created_at) filter (
       where ce.event_type = 'redirect'
-        and ce.traffic_category = 'human'
-        and ce.request_method = 'GET'
+        and coalesce(ce.request_method, 'GET') = 'GET'
+        and coalesce(ce.traffic_category, 'unknown') not in ('bot', 'prefetch')
     ) as last_click_at,
     count(*) filter (
       where ce.event_type = 'redirect'
-        and ce.traffic_category = 'human'
-        and ce.request_method = 'GET'
+        and coalesce(ce.request_method, 'GET') = 'GET'
+        and coalesce(ce.traffic_category, 'unknown') not in ('bot', 'prefetch')
         and ce.is_unique = true
     )::bigint as unique_clicks,
     count(*) filter (
       where ce.event_type = 'redirect'
-        and ce.traffic_category = 'human'
-        and ce.request_method = 'GET'
+        and coalesce(ce.request_method, 'GET') = 'GET'
+        and coalesce(ce.traffic_category, 'unknown') not in ('bot', 'prefetch')
         and ce.is_unique = false
     )::bigint as non_unique_clicks,
     count(*) filter (where ce.event_type = 'visit')::bigint as visits,
@@ -1209,13 +1211,13 @@ as $$
     count(*) filter (where ce.event_type = 'human_click')::bigint as human_clicks,
     count(*) filter (
       where ce.event_type = 'redirect'
-        and ce.traffic_category = 'human'
-        and ce.request_method = 'GET'
+        and coalesce(ce.request_method, 'GET') = 'GET'
+        and coalesce(ce.traffic_category, 'unknown') not in ('bot', 'prefetch')
     )::bigint as redirects,
     count(*) filter (
       where ce.event_type = 'redirect'
-        and ce.traffic_category = 'human'
-        and ce.request_method = 'GET'
+        and coalesce(ce.request_method, 'GET') = 'GET'
+        and coalesce(ce.traffic_category, 'unknown') not in ('bot', 'prefetch')
         and coalesce(ce.metadata->>'redirect_path', '') = 'direct'
     )::bigint as direct_redirects,
     count(*) filter (where ce.traffic_category = 'bot')::bigint as bot_hits,
@@ -1235,8 +1237,8 @@ as $$
   where ce.created_at >= date_trunc('month', now())
     and ce.created_at < (date_trunc('month', now()) + interval '1 month')
     and ce.event_type = 'redirect'
-    and ce.traffic_category = 'human'
-    and ce.request_method = 'GET';
+    and coalesce(ce.request_method, 'GET') = 'GET'
+    and coalesce(ce.traffic_category, 'unknown') not in ('bot', 'prefetch');
 $$;
 
 create or replace function public.get_link_timeseries(
@@ -1295,8 +1297,8 @@ begin
       and ce.created_at >= v_start
       and ce.created_at < (v_end + v_step)
       and ce.event_type = 'redirect'
-      and ce.traffic_category = 'human'
-      and ce.request_method = 'GET'
+      and coalesce(ce.request_method, 'GET') = 'GET'
+      and coalesce(ce.traffic_category, 'unknown') not in ('bot', 'prefetch')
     group by 1
   )
   select
@@ -1350,8 +1352,8 @@ begin
   from public.click_events ce
   where ce.link_id = p_link_id
     and ce.event_type = 'redirect'
-    and ce.traffic_category = 'human'
-    and ce.request_method = 'GET'
+    and coalesce(ce.request_method, 'GET') = 'GET'
+    and coalesce(ce.traffic_category, 'unknown') not in ('bot', 'prefetch')
   group by 1
   order by clicks desc, label asc
   limit v_limit;
@@ -1385,8 +1387,8 @@ as $$
     from public.click_events ce
     where ce.link_id = p_link_id
       and ce.event_type = 'redirect'
-      and ce.traffic_category = 'human'
-      and ce.request_method = 'GET'
+      and coalesce(ce.request_method, 'GET') = 'GET'
+      and coalesce(ce.traffic_category, 'unknown') not in ('bot', 'prefetch')
     group by 1
   )
   select
@@ -1416,8 +1418,8 @@ as $$
     from public.click_events ce
     where ce.link_id = p_link_id
       and ce.event_type = 'redirect'
-      and ce.traffic_category = 'human'
-      and ce.request_method = 'GET'
+      and coalesce(ce.request_method, 'GET') = 'GET'
+      and coalesce(ce.traffic_category, 'unknown') not in ('bot', 'prefetch')
     group by 1
   )
   select

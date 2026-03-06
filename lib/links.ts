@@ -514,6 +514,18 @@ function normalizeTrafficCategory(
   return "unknown";
 }
 
+function isHumanRedirectTrafficCategory(category: TrafficCategory): boolean {
+  return category !== "bot" && category !== "prefetch";
+}
+
+function isHumanRedirectEvent(
+  eventType: TrackingEventType,
+  trafficCategory: TrafficCategory,
+  requestMethod: string
+): boolean {
+  return eventType === "redirect" && requestMethod === "GET" && isHumanRedirectTrafficCategory(trafficCategory);
+}
+
 export async function getCurrentMonthClicks(): Promise<number> {
   const rows = await runRpcList<{ total_clicks: number }>("current_month_clicks");
   return toNumber(rows[0]?.total_clicks);
@@ -1014,7 +1026,7 @@ async function aggregateGlobalAnalytics(window: AnalyticsWindow): Promise<Aggreg
         prefetchHits += 1;
       }
 
-      const isHumanRedirect = eventType === "redirect" && trafficCategory === "human" && requestMethod === "GET";
+      const isHumanRedirect = isHumanRedirectEvent(eventType, trafficCategory, requestMethod);
       if (!isHumanRedirect) {
         continue;
       }

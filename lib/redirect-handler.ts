@@ -224,15 +224,21 @@ export async function handleRedirectRequest(request: NextRequest, slug: string |
   }) {
     if (!settings.trackingEnabled) return;
     const bucketIso = buildDedupBucket(eventType);
-    const dedupKey = buildTrackingDedupKey({
-      linkId: activeLink.id,
-      slug: activeLink.slug,
-      eventType,
-      ipHash,
-      userAgent,
-      bucketIso,
-      scopeHint: dedupScopeHint
-    });
+    const shouldSkipDedupForHumanFlow =
+      request.method.toUpperCase() === "GET" &&
+      traffic.category === "human" &&
+      (eventType === "human_click" || eventType === "redirect");
+    const dedupKey = shouldSkipDedupForHumanFlow
+      ? null
+      : buildTrackingDedupKey({
+          linkId: activeLink.id,
+          slug: activeLink.slug,
+          eventType,
+          ipHash,
+          userAgent,
+          bucketIso,
+          scopeHint: dedupScopeHint
+        });
 
     await insertClickEvent({
       linkId: activeLink.id,
