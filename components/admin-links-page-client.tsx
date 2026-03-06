@@ -296,7 +296,6 @@ export default function AdminLinksPageClient({
   const [loadedAnalyticsRange, setLoadedAnalyticsRange] = useState<AnalyticsRange | null>(
     initialGlobalAnalyticsLoaded ? "today" : null
   );
-  const [analyticsPrefetchAttempted, setAnalyticsPrefetchAttempted] = useState(initialGlobalAnalyticsLoaded);
 
   useEffect(() => {
     setOrigin(window.location.origin);
@@ -311,14 +310,6 @@ export default function AdminLinksPageClient({
   useEffect(() => {
     setGlobalBackgroundUrl(settings.globalBackgroundUrl ?? "");
   }, [settings.globalBackgroundUrl]);
-
-  useEffect(() => {
-    if (globalAnalyticsLoaded || analyticsPrefetchAttempted) {
-      return;
-    }
-    setAnalyticsPrefetchAttempted(true);
-    void refresh(links.page, { includeAnalytics: true, silent: true, analyticsRange });
-  }, [analyticsPrefetchAttempted, globalAnalyticsLoaded]);
 
   useEffect(() => {
     if (activeSection !== "analytics" || loadingAnalyticsData) {

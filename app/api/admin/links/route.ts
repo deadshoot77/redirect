@@ -11,7 +11,7 @@ import { shortLinkCreateSchema } from "@/lib/validation";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-const GLOBAL_ANALYTICS_TIMEOUT_MS = 12_000;
+const GLOBAL_ANALYTICS_TIMEOUT_MS = 30_000;
 
 async function withTimeout<T>(operation: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout> | null = null;

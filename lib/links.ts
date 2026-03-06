@@ -265,6 +265,8 @@ export interface InsertClickEventInput {
 }
 
 interface ClickEventStatRow {
+  id?: string | null;
+  link_id?: string | null;
   slug: string | null;
   created_at: string;
   country: string | null;
@@ -314,11 +316,8 @@ const ADMIN_SETTINGS_CACHE_TTL_MS = 60_000;
 const GLOBAL_ANALYTICS_CACHE_TTL_MS = 30_000;
 const DEFAULT_ANALYTICS_TIME_ZONE = "Europe/Paris";
 const DEFAULT_ANALYTICS_RANGE: AnalyticsRange = "today";
-const GLOBAL_ANALYTICS_BATCH_SIZE = 500;
-const LIST_STATS_RPC_BACKOFF_MS = 5 * 60_000;
-const LIST_STATS_RPC_TIMEOUT_MS = 12_000;
-const LIST_LINK_OVERVIEW_TIMEOUT_MS = 10_000;
-const LINK_ANALYTICS_RPC_TIMEOUT_MS = 12_000;
+const GLOBAL_ANALYTICS_BATCH_SIZE = 1000;
+const CLICK_EVENTS_SCAN_BATCH_SIZE = 1000;
 const SOCIAL_SOURCES = new Set([
   "facebook",
   "instagram",
@@ -349,7 +348,6 @@ let cachedRuntimeGlobalAnalytics:
       range: AnalyticsRange;
     }
   | null = null;
-let listStatsRpcDisabledUntilMs = 0;
 
 function toNumber(value: unknown): number {
   if (typeof value === "number") return value;
@@ -361,10 +359,6 @@ function toSafePositiveInt(value: number, fallback: number): number {
   if (!Number.isFinite(value)) return fallback;
   const normalized = Math.floor(value);
   return normalized >= 1 ? normalized : fallback;
-}
-
-function isStatementTimeoutError(error: Error): boolean {
-  return /statement timeout|canceling statement due to statement timeout|timed out after/i.test(error.message);
 }
 
 function toString(value: unknown, fallback = ""): string {
@@ -527,90 +521,205 @@ function isHumanRedirectEvent(
   return eventType === "redirect" && requestMethod === "GET" && isHumanRedirectTrafficCategory(trafficCategory);
 }
 
-function applyHumanRedirectFilters(query: any): any {
-  return query.eq("event_type", "redirect").eq("request_method", "GET").or("traffic_category.eq.human,traffic_category.eq.unknown,traffic_category.is.null");
-}
-
-async function countLinkEvents(linkId: string, applyFilters: (query: any) => any): Promise<number> {
-  const query = applyFilters(
-    getSupabaseAdminClient().from("click_events").select("id", { head: true, count: "exact" }).eq("link_id", linkId)
+async function getLinkListStatsFromEvents(
+  linkIds: string[],
+  timeZone = DEFAULT_ANALYTICS_TIME_ZONE
+): Promise<
+  Map<
+    string,
+    {
+      clicks_received: number;
+      clicks_today: number;
+      last_click_at: string | null;
+    }
+  >
+> {
+  const stats = new Map(
+    linkIds.map((linkId) => [
+      linkId,
+      {
+        clicks_received: 0,
+        clicks_today: 0,
+        last_click_at: null as string | null
+      }
+    ])
   );
-  const { count, error } = await query;
-  if (error) {
-    throw new Error(`countLinkEvents failed: ${error.message}`);
+
+  if (linkIds.length === 0) {
+    return stats;
   }
-  return toNumber(count ?? 0);
+
+  const formatter = createDayKeyFormatter(timeZone);
+  const todayKey = toDayKey(Date.now(), formatter);
+
+  await scanClickEvents<ClickEventStatRow>({
+    select: "link_id, created_at, event_type, traffic_category, request_method, is_bot, is_prefetch",
+    applyFilters: (query) =>
+      query
+        .in("link_id", linkIds)
+        .eq("event_type", "redirect")
+        .eq("request_method", "GET")
+        .or("traffic_category.eq.human,traffic_category.eq.unknown,traffic_category.is.null"),
+    onBatch: (rows) => {
+      for (const row of rows) {
+        const currentLinkId = toStringOrNull(row.link_id);
+        if (!currentLinkId) {
+          continue;
+        }
+        const currentStats = stats.get(currentLinkId);
+        if (!currentStats) {
+          continue;
+        }
+
+        currentStats.clicks_received += 1;
+        if (!currentStats.last_click_at) {
+          currentStats.last_click_at = toStringOrNull(row.created_at);
+        }
+
+        const eventAt = Date.parse(toString(row.created_at));
+        if (!Number.isNaN(eventAt) && toDayKey(eventAt, formatter) === todayKey) {
+          currentStats.clicks_today += 1;
+        }
+      }
+    }
+  });
+
+  return stats;
 }
 
-async function getLinkListStatsFromTable(linkId: string): Promise<{
-  clicks_received: number;
-  clicks_today: number;
-  last_click_at: string | null;
-}> {
-  const startOfDayIso = new Date(startOfUtcDay(Date.now())).toISOString();
-  const [clicksReceived, clicksToday, lastClickResult] = await Promise.all([
-    countLinkEvents(linkId, (query) => applyHumanRedirectFilters(query)),
-    countLinkEvents(linkId, (query) => applyHumanRedirectFilters(query).gte("created_at", startOfDayIso)),
-    applyHumanRedirectFilters(
-      getSupabaseAdminClient()
-        .from("click_events")
-        .select("created_at")
-        .eq("link_id", linkId)
-        .order("created_at", { ascending: false })
-        .limit(1)
-    )
-  ]);
+async function getLinkAnalyticsDataFromEvents(linkId: string, timeZone: string): Promise<LinkAnalyticsData> {
+  const nowMs = Date.now();
+  const dayKeyFormatter = createDayKeyFormatter(timeZone);
+  const todayKey = toDayKey(nowMs, dayKeyFormatter);
+  const utcHourEnd = startOfUtcHour(nowMs);
+  const utcHourStart = utcHourEnd - 23 * HOUR_MS;
+  const utcDayEnd = startOfUtcDay(nowMs);
+  const utcDayStart = utcDayEnd - 29 * DAY_MS;
+  const utcMonthEnd = startOfUtcMonth(nowMs);
+  const utcMonthStartDate = new Date(utcMonthEnd);
+  utcMonthStartDate.setUTCMonth(utcMonthStartDate.getUTCMonth() - 11);
+  const utcMonthStart = utcMonthStartDate.getTime();
+  const monthPoints = 12;
 
-  if (lastClickResult.error) {
-    throw new Error(`getLinkListStatsFromTable last click failed: ${lastClickResult.error.message}`);
-  }
+  let redirects = 0;
+  let visits = 0;
+  let landingViews = 0;
+  let humanClicks = 0;
+  let directRedirects = 0;
+  let botHits = 0;
+  let prefetchHits = 0;
+  let clicksToday = 0;
+  let uniqueClicks = 0;
+  let nonUniqueClicks = 0;
+  let lastClickAt: string | null = null;
+  let lastClickAtMs = Number.NEGATIVE_INFINITY;
 
-  const lastClickAt =
-    Array.isArray(lastClickResult.data) && lastClickResult.data.length > 0
-      ? toStringOrNull(lastClickResult.data[0]?.created_at)
-      : null;
+  const countriesCounter = new Map<string, number>();
+  const citiesCounter = new Map<string, number>();
+  const regionsCounter = new Map<string, number>();
+  const socialCounter = new Map<string, number>();
+  const sourcesCounter = new Map<string, number>();
+  const browsersCounter = new Map<string, number>();
+  const devicesCounter = new Map<string, number>();
+  const languagesCounter = new Map<string, number>();
+  const platformsCounter = new Map<string, number>();
+  const hourSeriesCounter = new Map<number, number>();
+  const daySeriesCounter = new Map<number, number>();
+  const monthSeriesCounter = new Map<number, number>();
+  const dayBreakdown = Array.from({ length: DAY_LABELS.length }, () => 0);
+  const hourBreakdown = Array.from({ length: 24 }, () => 0);
 
-  return {
-    clicks_received: clicksReceived,
-    clicks_today: clicksToday,
-    last_click_at: lastClickAt
-  };
-}
+  await scanClickEvents<ClickEventStatRow>({
+    select:
+      "created_at, country, region, city, source, browser, device, language, platform, is_unique, event_type, traffic_category, request_method, is_bot, is_prefetch, metadata",
+    applyFilters: (query) => query.eq("link_id", linkId),
+    onBatch: (rows) => {
+      for (const row of rows) {
+        const eventType = normalizeTrackingEventType(row.event_type);
+        const trafficCategory = normalizeTrafficCategory(row.traffic_category, Boolean(row.is_bot), Boolean(row.is_prefetch));
+        const requestMethod = toString(row.request_method || "GET").trim().toUpperCase() || "GET";
 
-async function getLinkOverviewFromTable(linkId: string): Promise<LinkOverviewStats> {
-  const startOfDayIso = new Date(startOfUtcDay(Date.now())).toISOString();
-  const [redirects, clicksToday, uniqueClicks, nonUniqueClicks, visits, landingViews, humanClicks, botHits, prefetchHits, directRedirects, lastClickResult] =
-    await Promise.all([
-      countLinkEvents(linkId, (query) => applyHumanRedirectFilters(query)),
-      countLinkEvents(linkId, (query) => applyHumanRedirectFilters(query).gte("created_at", startOfDayIso)),
-      countLinkEvents(linkId, (query) => applyHumanRedirectFilters(query).eq("is_unique", true)),
-      countLinkEvents(linkId, (query) => applyHumanRedirectFilters(query).eq("is_unique", false)),
-      countLinkEvents(linkId, (query) => query.eq("event_type", "visit")),
-      countLinkEvents(linkId, (query) => query.eq("event_type", "landing_view")),
-      countLinkEvents(linkId, (query) => query.eq("event_type", "human_click")),
-      countLinkEvents(linkId, (query) => query.eq("traffic_category", "bot")),
-      countLinkEvents(linkId, (query) => query.eq("traffic_category", "prefetch")),
-      countLinkEvents(linkId, (query) => applyHumanRedirectFilters(query).contains("metadata", { redirect_path: "direct" })),
-      applyHumanRedirectFilters(
-        getSupabaseAdminClient()
-          .from("click_events")
-          .select("created_at")
-          .eq("link_id", linkId)
-          .order("created_at", { ascending: false })
-          .limit(1)
-      )
-    ]);
+        if (eventType === "visit") {
+          visits += 1;
+        } else if (eventType === "landing_view") {
+          landingViews += 1;
+        } else if (eventType === "human_click") {
+          humanClicks += 1;
+        }
 
-  if (lastClickResult.error) {
-    throw new Error(`getLinkOverviewFromTable last click failed: ${lastClickResult.error.message}`);
-  }
+        if (trafficCategory === "bot") {
+          botHits += 1;
+        } else if (trafficCategory === "prefetch") {
+          prefetchHits += 1;
+        }
 
-  const lastClickAt =
-    Array.isArray(lastClickResult.data) && lastClickResult.data.length > 0
-      ? toStringOrNull(lastClickResult.data[0]?.created_at)
-      : null;
+        const isHumanRedirect = isHumanRedirectEvent(eventType, trafficCategory, requestMethod);
+        if (!isHumanRedirect) {
+          continue;
+        }
 
-  return {
+        redirects += 1;
+        if (row.is_unique) {
+          uniqueClicks += 1;
+        } else {
+          nonUniqueClicks += 1;
+        }
+
+        const metadata =
+          row.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata)
+            ? (row.metadata as Record<string, unknown>)
+            : null;
+        if (metadata?.redirect_path === "direct") {
+          directRedirects += 1;
+        }
+
+        incrementCounter(countriesCounter, normalizeCountryLabel(row.country));
+        incrementCounter(citiesCounter, normalizeGenericLabel(row.city));
+        incrementCounter(regionsCounter, normalizeGenericLabel(row.region));
+        incrementCounter(sourcesCounter, normalizeSourceLabel(row.source));
+        incrementCounter(socialCounter, normalizeSocialSourceLabel(row.source));
+        incrementCounter(browsersCounter, normalizeGenericLabel(row.browser).toLowerCase());
+        incrementCounter(devicesCounter, normalizeGenericLabel(row.device).toLowerCase());
+        incrementCounter(languagesCounter, normalizeGenericLabel(row.language).toLowerCase());
+        incrementCounter(platformsCounter, normalizeGenericLabel(row.platform).toLowerCase());
+
+        const eventAt = Date.parse(toString(row.created_at));
+        if (Number.isNaN(eventAt)) {
+          continue;
+        }
+
+        if (eventAt > lastClickAtMs) {
+          lastClickAtMs = eventAt;
+          lastClickAt = new Date(eventAt).toISOString();
+        }
+
+        if (toDayKey(eventAt, dayKeyFormatter) === todayKey) {
+          clicksToday += 1;
+        }
+
+        const zonedParts = getZonedDateTimeParts(eventAt, timeZone);
+        dayBreakdown[zonedParts.weekday] += 1;
+        hourBreakdown[zonedParts.hour] += 1;
+
+        const hourBucket = startOfUtcHour(eventAt);
+        if (hourBucket >= utcHourStart && hourBucket <= utcHourEnd) {
+          incrementNumericCounter(hourSeriesCounter, hourBucket);
+        }
+
+        const dayBucket = startOfUtcDay(eventAt);
+        if (dayBucket >= utcDayStart && dayBucket <= utcDayEnd) {
+          incrementNumericCounter(daySeriesCounter, dayBucket);
+        }
+
+        const monthBucket = Date.UTC(zonedParts.year, zonedParts.month - 1, 1);
+        if (monthBucket >= utcMonthStart && monthBucket <= utcMonthEnd) {
+          incrementNumericCounter(monthSeriesCounter, monthBucket);
+        }
+      }
+    }
+  });
+
+  const overview: LinkOverviewStats = {
     totalClicks: redirects,
     qrScans: 0,
     clicksToday,
@@ -624,6 +733,34 @@ async function getLinkOverviewFromTable(linkId: string): Promise<LinkOverviewSta
     directRedirects,
     botHits,
     prefetchHits
+  };
+
+  return {
+    overview,
+    timeseries: {
+      hours: buildHoursSeries(hourSeriesCounter, utcHourStart, utcHourEnd),
+      days: buildDaysSeries(daySeriesCounter, utcDayStart, utcDayEnd),
+      months: buildMonthsSeries(monthSeriesCounter, utcMonthStart, monthPoints)
+    },
+    worldMap: toSortedLabelCounts(countriesCounter, 12),
+    topCities: toSortedLabelCounts(citiesCounter, 8),
+    topRegions: toSortedLabelCounts(regionsCounter, 8),
+    topDays: DAY_LABELS.map((label, index) => ({ label, clicks: dayBreakdown[index] ?? 0 })),
+    popularHours: hourBreakdown.map((clicks, hour) => ({ label: `${formatTwoDigits(hour)}:00`, clicks })),
+    clickType: [
+      { label: "Visits", clicks: visits },
+      { label: "Landing Views", clicks: landingViews },
+      { label: "Human Clicks", clicks: humanClicks },
+      { label: "Redirects (human)", clicks: redirects },
+      { label: "Bots", clicks: botHits },
+      { label: "Prefetch", clicks: prefetchHits }
+    ],
+    topSocialPlatforms: toSortedLabelCounts(socialCounter, 8),
+    topSources: toSortedLabelCounts(sourcesCounter, 8),
+    topBrowsers: toSortedLabelCounts(browsersCounter, 8),
+    topDevices: toSortedLabelCounts(devicesCounter, 6),
+    topLanguages: toSortedLabelCounts(languagesCounter, 8),
+    topPlatforms: toSortedLabelCounts(platformsCounter, 8)
   };
 }
 
@@ -980,6 +1117,49 @@ async function withTimeout<T>(operation: Promise<T>, timeoutMs: number, label: s
   }
 }
 
+async function scanClickEvents<T extends ClickEventStatRow>(options: {
+  select: string;
+  applyFilters?: (query: any) => any;
+  batchSize?: number;
+  onBatch: (rows: T[]) => void | Promise<void>;
+}): Promise<void> {
+  const batchSize = Math.max(1, Math.min(CLICK_EVENTS_SCAN_BATCH_SIZE, options.batchSize ?? CLICK_EVENTS_SCAN_BATCH_SIZE));
+  let cursorCreatedAt: string | null = null;
+
+  while (true) {
+    let query = getSupabaseAdminClient().from("click_events").select(options.select).order("created_at", { ascending: false }).limit(batchSize);
+    if (options.applyFilters) {
+      query = options.applyFilters(query);
+    }
+    if (cursorCreatedAt) {
+      query = query.lt("created_at", cursorCreatedAt);
+    }
+
+    const { data, error } = await query;
+    if (error) {
+      throw new Error(`scanClickEvents failed: ${error.message}`);
+    }
+
+    const rows = ((data ?? []) as unknown) as T[];
+    if (rows.length === 0) {
+      break;
+    }
+
+    await options.onBatch(rows);
+
+    if (rows.length < batchSize) {
+      break;
+    }
+
+    const nextCursorCreatedAt = toStringOrNull(rows[rows.length - 1]?.created_at);
+    if (!nextCursorCreatedAt || nextCursorCreatedAt === cursorCreatedAt) {
+      break;
+    }
+
+    cursorCreatedAt = nextCursorCreatedAt;
+  }
+}
+
 function startOfUtcHour(epochMs: number): number {
   const date = new Date(epochMs);
   date.setUTCMinutes(0, 0, 0);
@@ -1087,111 +1267,91 @@ async function aggregateGlobalAnalytics(window: AnalyticsWindow): Promise<Aggreg
   const monthSeriesCounter = new Map<number, number>();
   const dayBreakdown = Array.from({ length: DAY_LABELS.length }, () => 0);
   const hourBreakdown = Array.from({ length: 24 }, () => 0);
+  await scanClickEvents<ClickEventStatRow>({
+    select:
+      "slug, created_at, country, region, city, source, browser, device, language, platform, is_unique, event_type, traffic_category, request_method, is_bot, is_prefetch, metadata",
+    batchSize: safeBatchSize,
+    applyFilters: (query) => query.gte("created_at", new Date(startAtMs).toISOString()).lt("created_at", new Date(endAtMs).toISOString()),
+    onBatch: (rows) => {
+      for (const row of rows) {
+        const eventType = normalizeTrackingEventType(row.event_type);
+        const trafficCategory = normalizeTrafficCategory(row.traffic_category, Boolean(row.is_bot), Boolean(row.is_prefetch));
+        const requestMethod = toString(row.request_method || "GET").trim().toUpperCase() || "GET";
 
-  while (true) {
-    const { data, error } = await getSupabaseAdminClient()
-      .from("click_events")
-      .select(
-        "slug, created_at, country, region, city, source, browser, device, language, platform, is_unique, event_type, traffic_category, request_method, is_bot, is_prefetch, metadata"
-      )
-      .gte("created_at", new Date(startAtMs).toISOString())
-      .lt("created_at", new Date(endAtMs).toISOString())
-      .order("created_at", { ascending: false })
-      .range(offset, offset + safeBatchSize - 1);
-
-    if (error) {
-      throw new Error(`aggregateGlobalAnalytics failed: ${error.message}`);
-    }
-
-    const rows = (data ?? []) as ClickEventStatRow[];
-    if (rows.length === 0) {
-      break;
-    }
-
-    for (const row of rows) {
-      const eventType = normalizeTrackingEventType(row.event_type);
-      const trafficCategory = normalizeTrafficCategory(row.traffic_category, Boolean(row.is_bot), Boolean(row.is_prefetch));
-      const requestMethod = toString(row.request_method || "GET").trim().toUpperCase() || "GET";
-
-      if (eventType === "visit") {
-        visits += 1;
-      } else if (eventType === "landing_view") {
-        landingViews += 1;
-      } else if (eventType === "human_click") {
-        humanClicks += 1;
-      }
-
-      if (trafficCategory === "bot") {
-        botHits += 1;
-      } else if (trafficCategory === "prefetch") {
-        prefetchHits += 1;
-      }
-
-      const isHumanRedirect = isHumanRedirectEvent(eventType, trafficCategory, requestMethod);
-      if (!isHumanRedirect) {
-        continue;
-      }
-
-      redirects += 1;
-      if (row.is_unique) {
-        uniqueClicks += 1;
-      } else {
-        nonUniqueClicks += 1;
-      }
-
-      const metadata =
-        row.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata)
-          ? (row.metadata as Record<string, unknown>)
-          : null;
-      if (metadata?.redirect_path === "direct") {
-        directRedirects += 1;
-      }
-
-      incrementCounter(linksCounter, normalizeSlugLabel(row.slug));
-      incrementCounter(countriesCounter, normalizeCountryLabel(row.country));
-      incrementCounter(citiesCounter, normalizeGenericLabel(row.city));
-      incrementCounter(regionsCounter, normalizeGenericLabel(row.region));
-      incrementCounter(sourcesCounter, normalizeSourceLabel(row.source));
-      incrementCounter(socialCounter, normalizeSocialSourceLabel(row.source));
-      incrementCounter(browsersCounter, normalizeGenericLabel(row.browser).toLowerCase());
-      incrementCounter(devicesCounter, normalizeGenericLabel(row.device).toLowerCase());
-      incrementCounter(languagesCounter, normalizeGenericLabel(row.language).toLowerCase());
-      incrementCounter(platformsCounter, normalizeGenericLabel(row.platform).toLowerCase());
-
-      const eventAt = Date.parse(toString(row.created_at));
-      if (!Number.isNaN(eventAt)) {
-        if (eventAt > lastClickAtMs) {
-          lastClickAtMs = eventAt;
-          lastClickAt = new Date(eventAt).toISOString();
+        if (eventType === "visit") {
+          visits += 1;
+        } else if (eventType === "landing_view") {
+          landingViews += 1;
+        } else if (eventType === "human_click") {
+          humanClicks += 1;
         }
 
-        const zonedParts = getZonedDateTimeParts(eventAt, window.timeZone);
-        dayBreakdown[zonedParts.weekday] += 1;
-        hourBreakdown[zonedParts.hour] += 1;
-
-        const hourBucket = startOfUtcHour(eventAt);
-        if (hourBucket >= utcHourStart && hourBucket <= utcHourEnd) {
-          incrementNumericCounter(hourSeriesCounter, hourBucket);
+        if (trafficCategory === "bot") {
+          botHits += 1;
+        } else if (trafficCategory === "prefetch") {
+          prefetchHits += 1;
         }
 
-        const dayBucket = startOfUtcDay(eventAt);
-        if (dayBucket >= utcDayStart && dayBucket <= utcDayEnd) {
-          incrementNumericCounter(daySeriesCounter, dayBucket);
+        const isHumanRedirect = isHumanRedirectEvent(eventType, trafficCategory, requestMethod);
+        if (!isHumanRedirect) {
+          continue;
         }
 
-        const monthBucket = Date.UTC(zonedParts.year, zonedParts.month - 1, 1);
-        if (monthBucket >= utcMonthStart && monthBucket <= utcMonthEnd) {
-          incrementNumericCounter(monthSeriesCounter, monthBucket);
+        redirects += 1;
+        if (row.is_unique) {
+          uniqueClicks += 1;
+        } else {
+          nonUniqueClicks += 1;
+        }
+
+        const metadata =
+          row.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata)
+            ? (row.metadata as Record<string, unknown>)
+            : null;
+        if (metadata?.redirect_path === "direct") {
+          directRedirects += 1;
+        }
+
+        incrementCounter(linksCounter, normalizeSlugLabel(row.slug));
+        incrementCounter(countriesCounter, normalizeCountryLabel(row.country));
+        incrementCounter(citiesCounter, normalizeGenericLabel(row.city));
+        incrementCounter(regionsCounter, normalizeGenericLabel(row.region));
+        incrementCounter(sourcesCounter, normalizeSourceLabel(row.source));
+        incrementCounter(socialCounter, normalizeSocialSourceLabel(row.source));
+        incrementCounter(browsersCounter, normalizeGenericLabel(row.browser).toLowerCase());
+        incrementCounter(devicesCounter, normalizeGenericLabel(row.device).toLowerCase());
+        incrementCounter(languagesCounter, normalizeGenericLabel(row.language).toLowerCase());
+        incrementCounter(platformsCounter, normalizeGenericLabel(row.platform).toLowerCase());
+
+        const eventAt = Date.parse(toString(row.created_at));
+        if (!Number.isNaN(eventAt)) {
+          if (eventAt > lastClickAtMs) {
+            lastClickAtMs = eventAt;
+            lastClickAt = new Date(eventAt).toISOString();
+          }
+
+          const zonedParts = getZonedDateTimeParts(eventAt, window.timeZone);
+          dayBreakdown[zonedParts.weekday] += 1;
+          hourBreakdown[zonedParts.hour] += 1;
+
+          const hourBucket = startOfUtcHour(eventAt);
+          if (hourBucket >= utcHourStart && hourBucket <= utcHourEnd) {
+            incrementNumericCounter(hourSeriesCounter, hourBucket);
+          }
+
+          const dayBucket = startOfUtcDay(eventAt);
+          if (dayBucket >= utcDayStart && dayBucket <= utcDayEnd) {
+            incrementNumericCounter(daySeriesCounter, dayBucket);
+          }
+
+          const monthBucket = Date.UTC(zonedParts.year, zonedParts.month - 1, 1);
+          if (monthBucket >= utcMonthStart && monthBucket <= utcMonthEnd) {
+            incrementNumericCounter(monthSeriesCounter, monthBucket);
+          }
         }
       }
     }
-
-    if (rows.length < safeBatchSize) {
-      break;
-    }
-
-    offset += safeBatchSize;
-  }
+  });
 
   const topDays: LabelCount[] = DAY_LABELS.map((label, index) => ({
     label,
@@ -1368,6 +1528,10 @@ async function listShortLinksWithoutRpc(
   }
 
   const rows = (data ?? []) as ShortLinkListBaseRow[];
+  const statsByLinkId = await getLinkListStatsFromEvents(
+    rows.map((row) => row.id),
+    DEFAULT_ANALYTICS_TIME_ZONE
+  );
 
   let safeTotal = knownTotal;
   if (safeTotal === null) {
@@ -1383,39 +1547,14 @@ async function listShortLinksWithoutRpc(
     }
   }
 
-  const statsByRow = await Promise.all(
-    rows.map(async (row) => {
-      try {
-        const overview = await withTimeout(
-          getLinkOverview(row.id),
-          LIST_LINK_OVERVIEW_TIMEOUT_MS,
-          "get_link_overview(list fallback)"
-        );
-        return {
-          clicks_received: overview.redirects,
-          clicks_today: overview.clicksToday,
-          last_click_at: overview.lastClickAt
-        };
-      } catch (error) {
-        console.error("listShortLinksWithStats fallback overview failed; using direct table fallback", error);
-        try {
-          return await getLinkListStatsFromTable(row.id);
-        } catch (fallbackError) {
-          console.error("listShortLinksWithStats direct table fallback failed", fallbackError);
-          return {
-            clicks_received: 0,
-            clicks_today: 0,
-            last_click_at: null
-          };
-        }
-      }
-    })
-  );
-
   const items = rows.map((row, index) =>
     mapShortLinkListItem({
       ...row,
-      ...statsByRow[index]
+      ...(statsByLinkId.get(row.id) ?? {
+        clicks_received: 0,
+        clicks_today: 0,
+        last_click_at: null
+      })
     })
   );
   const totalPages = Math.max(1, Math.ceil(safeTotal / safeSize));
@@ -1432,58 +1571,9 @@ async function listShortLinksWithoutRpc(
 export async function listShortLinksWithStats(page = 1, pageSize = 20): Promise<PaginatedShortLinks> {
   const safePage = toSafePositiveInt(page, 1);
   const safeSize = Math.min(100, toSafePositiveInt(pageSize, 20));
-  const offset = (safePage - 1) * safeSize;
-  const nowMs = Date.now();
-  const shouldUseRpc = nowMs >= listStatsRpcDisabledUntilMs;
   const totalPromise = getSupabaseAdminClient().from("short_links").select("id", { head: true, count: "exact" }).eq("is_active", true);
-
-  if (!shouldUseRpc) {
-    const { count, error: totalError } = await totalPromise;
-    return listShortLinksWithoutRpc(safePage, safeSize, totalError ? null : toNumber(count ?? 0));
-  }
-
-  const [{ count, error: totalError }, rpcResult] = await Promise.all([
-    totalPromise,
-    withTimeout(
-      runRpcList<ShortLinkListRow>("list_short_links_with_stats", {
-        p_limit: safeSize,
-        p_offset: offset
-      }),
-      LIST_STATS_RPC_TIMEOUT_MS,
-      "list_short_links_with_stats"
-    )
-      .then((rows) => ({ rows, error: null as Error | null }))
-      .catch((error) => ({
-        rows: [] as ShortLinkListRow[],
-        error: error instanceof Error ? error : new Error(String(error))
-      }))
-  ]);
-
-  if (rpcResult.error) {
-    if (isStatementTimeoutError(rpcResult.error)) {
-      listStatsRpcDisabledUntilMs = nowMs + LIST_STATS_RPC_BACKOFF_MS;
-      console.warn("list_short_links_with_stats timed out; using short_links fallback for 5 minutes");
-    } else {
-      console.error("list_short_links_with_stats rpc failed; falling back to short_links table", rpcResult.error);
-    }
-    return listShortLinksWithoutRpc(safePage, safeSize, totalError ? null : toNumber(count ?? 0));
-  }
-
-  if (totalError) {
-    console.error("listShortLinksWithStats total failed; using estimated total", totalError);
-  }
-
-  const items = rpcResult.rows.map((row) => mapShortLinkListItem(row));
-  const safeTotal = totalError ? Math.max(offset + items.length, items.length) : toNumber(count ?? 0);
-  const totalPages = Math.max(1, Math.ceil(safeTotal / safeSize));
-
-  return {
-    items,
-    page: safePage,
-    pageSize: safeSize,
-    total: safeTotal,
-    totalPages
-  };
+  const { count, error: totalError } = await totalPromise;
+  return listShortLinksWithoutRpc(safePage, safeSize, totalError ? null : toNumber(count ?? 0));
 }
 
 export async function getShortLinkById(id: string): Promise<ShortLink | null> {
@@ -1694,25 +1784,6 @@ function createEmptyLinkTimeSeries(granularity: "hours" | "days" | "months", poi
   return buildDaysSeries(new Map<number, number>(), start, end);
 }
 
-function sumCurrentDayClicks(points: TimeSeriesPoint[], timeZone: string): number {
-  const formatter = createDayKeyFormatter(timeZone);
-  const today = toDayKey(Date.now(), formatter);
-  return points.reduce((total, point) => {
-    const bucketMs = Date.parse(point.bucketAt);
-    if (Number.isNaN(bucketMs)) return total;
-    return toDayKey(bucketMs, formatter) === today ? total + toNumber(point.clicks) : total;
-  }, 0);
-}
-
-async function safeLinkAnalyticsCall<T>(label: string, operation: Promise<T>, fallback: T): Promise<T> {
-  try {
-    return await withTimeout(operation, LINK_ANALYTICS_RPC_TIMEOUT_MS, label);
-  } catch (error) {
-    console.error(`${label} fallback`, error);
-    return fallback;
-  }
-}
-
 export function createEmptyLinkAnalyticsData(): LinkAnalyticsData {
   return {
     overview: {
@@ -1757,92 +1828,10 @@ export function createEmptyLinkAnalyticsData(): LinkAnalyticsData {
   };
 }
 
-async function getLinkAnalyticsDataViaRpc(linkId: string, timeZone: string): Promise<LinkAnalyticsData> {
-  const fallback = createEmptyLinkAnalyticsData();
-  let overview = fallback.overview;
-  try {
-    overview = await withTimeout(getLinkOverview(linkId), LINK_ANALYTICS_RPC_TIMEOUT_MS, "get_link_overview");
-  } catch (error) {
-    console.error("get_link_overview failed; using direct table fallback", error);
-    try {
-      overview = await getLinkOverviewFromTable(linkId);
-    } catch (tableFallbackError) {
-      console.error("get_link_overview direct table fallback failed", tableFallbackError);
-    }
-  }
-
-  const [
-    hoursSeries,
-    daysSeries,
-    monthsSeries,
-    topCountries,
-    topCities,
-    topRegions,
-    topSources,
-    topBrowsers,
-    topDevices,
-    topLanguages,
-    topPlatforms,
-    topSocialPlatforms,
-    topDays,
-    popularHours
-  ] = await Promise.all([
-    safeLinkAnalyticsCall("get_link_timeseries(hours)", getLinkTimeseries(linkId, "hours", 24), fallback.timeseries.hours),
-    safeLinkAnalyticsCall("get_link_timeseries(days)", getLinkTimeseries(linkId, "days", 30), fallback.timeseries.days),
-    safeLinkAnalyticsCall("get_link_timeseries(months)", getLinkTimeseries(linkId, "months", 12), fallback.timeseries.months),
-    safeLinkAnalyticsCall("get_link_top_dimension(country)", getLinkTopDimension(linkId, "country", 12), fallback.worldMap),
-    safeLinkAnalyticsCall("get_link_top_dimension(city)", getLinkTopDimension(linkId, "city", 8), fallback.topCities),
-    safeLinkAnalyticsCall("get_link_top_dimension(region)", getLinkTopDimension(linkId, "region", 8), fallback.topRegions),
-    safeLinkAnalyticsCall("get_link_top_dimension(source)", getLinkTopDimension(linkId, "source", 8), fallback.topSources),
-    safeLinkAnalyticsCall("get_link_top_dimension(browser)", getLinkTopDimension(linkId, "browser", 8), fallback.topBrowsers),
-    safeLinkAnalyticsCall("get_link_top_dimension(device)", getLinkTopDimension(linkId, "device", 6), fallback.topDevices),
-    safeLinkAnalyticsCall("get_link_top_dimension(language)", getLinkTopDimension(linkId, "language", 8), fallback.topLanguages),
-    safeLinkAnalyticsCall("get_link_top_dimension(platform)", getLinkTopDimension(linkId, "platform", 8), fallback.topPlatforms),
-    safeLinkAnalyticsCall("get_link_top_dimension(social)", getLinkTopDimension(linkId, "social", 8), fallback.topSocialPlatforms),
-    safeLinkAnalyticsCall("get_link_day_breakdown", getLinkDayBreakdown(linkId), fallback.topDays),
-    safeLinkAnalyticsCall("get_link_hour_breakdown", getLinkHourBreakdown(linkId), fallback.popularHours)
-  ]);
-
-  const normalizedOverview: LinkOverviewStats = {
-    ...overview,
-    clicksToday: hoursSeries.length > 0 ? sumCurrentDayClicks(hoursSeries, timeZone) : overview.clicksToday
-  };
-
-  const clickType: LabelCount[] = [
-    { label: "Visits", clicks: normalizedOverview.visits },
-    { label: "Landing Views", clicks: normalizedOverview.landingViews },
-    { label: "Human Clicks", clicks: normalizedOverview.humanClicks },
-    { label: "Redirects (human)", clicks: normalizedOverview.redirects },
-    { label: "Bots", clicks: normalizedOverview.botHits },
-    { label: "Prefetch", clicks: normalizedOverview.prefetchHits }
-  ];
-
-  return {
-    overview: normalizedOverview,
-    timeseries: {
-      hours: hoursSeries,
-      days: daysSeries,
-      months: monthsSeries
-    },
-    worldMap: topCountries,
-    topCities,
-    topRegions,
-    topDays,
-    popularHours,
-    clickType,
-    topSocialPlatforms,
-    topSources,
-    topBrowsers,
-    topDevices,
-    topLanguages,
-    topPlatforms
-  };
-}
-
 export async function getLinkAnalyticsData(linkId: string, timeZone?: string): Promise<LinkAnalyticsData> {
   const resolvedTimeZone = resolveAnalyticsTimeZone(timeZone);
   try {
-    return await getLinkAnalyticsDataViaRpc(linkId, resolvedTimeZone);
+    return await getLinkAnalyticsDataFromEvents(linkId, resolvedTimeZone);
   } catch (error) {
     console.error("getLinkAnalyticsData fallback to empty payload", error);
     return createEmptyLinkAnalyticsData();
