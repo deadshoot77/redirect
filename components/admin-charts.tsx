@@ -602,7 +602,7 @@ function RebrandlyCharts(props: RebrandlyChartsProps) {
       datasets: [
         {
           data: props.clickType.map((entry) => entry.clicks),
-          backgroundColor: ["#f87171", "#fb923c", "#60a5fa", "#22c55e", "#facc15", "#a78bfa"],
+          backgroundColor: ["#f87171", "#fb923c", "#60a5fa", "#22c55e", "#14b8a6", "#facc15", "#a78bfa"],
           borderWidth: 0
         }
       ]

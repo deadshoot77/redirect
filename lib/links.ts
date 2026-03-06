@@ -190,10 +190,11 @@ export function createEmptyGlobalAnalyticsData(totalLinks = 0): GlobalAnalyticsD
     topDays,
     popularHours,
     clickType: [
-      { label: "Visits", clicks: 0 },
+      { label: "Visits (human)", clicks: 0 },
       { label: "Landing Views", clicks: 0 },
       { label: "Human Clicks", clicks: 0 },
       { label: "Redirects (human)", clicks: 0 },
+      { label: "Redirects (legacy)", clicks: 0 },
       { label: "Bots", clicks: 0 },
       { label: "Prefetch", clicks: 0 }
     ],
@@ -643,7 +644,9 @@ async function getLinkAnalyticsDataFromEvents(linkId: string, timeZone: string):
   const monthPoints = 12;
 
   let redirects = 0;
+  let legacyRedirects = 0;
   let visits = 0;
+  let humanVisits = 0;
   let landingViews = 0;
   let humanClicks = 0;
   let directRedirects = 0;
@@ -682,6 +685,9 @@ async function getLinkAnalyticsDataFromEvents(linkId: string, timeZone: string):
 
         if (eventType === "visit") {
           visits += 1;
+          if (isHumanRedirectTrafficCategory(trafficCategory)) {
+            humanVisits += 1;
+          }
         } else if (eventType === "landing_view") {
           landingViews += 1;
         } else if (eventType === "human_click") {
@@ -694,8 +700,16 @@ async function getLinkAnalyticsDataFromEvents(linkId: string, timeZone: string):
           prefetchHits += 1;
         }
 
-        const isHumanRedirect = isVerifiedHumanRedirectRow(eventType, trafficCategory, requestMethod, row.metadata);
-        if (!isHumanRedirect) {
+        const isVerifiedHumanRedirect = isVerifiedHumanRedirectRow(eventType, trafficCategory, requestMethod, row.metadata);
+        const isLegacyHumanRedirect =
+          isHumanRedirectEvent(eventType, trafficCategory, requestMethod) &&
+          !isVerifiedHumanRedirect;
+
+        if (isLegacyHumanRedirect) {
+          legacyRedirects += 1;
+        }
+
+        if (!isVerifiedHumanRedirect) {
           continue;
         }
 
@@ -789,10 +803,11 @@ async function getLinkAnalyticsDataFromEvents(linkId: string, timeZone: string):
     topDays: DAY_LABELS.map((label, index) => ({ label, clicks: dayBreakdown[index] ?? 0 })),
     popularHours: hourBreakdown.map((clicks, hour) => ({ label: `${formatTwoDigits(hour)}:00`, clicks })),
     clickType: [
-      { label: "Visits", clicks: visits },
+      { label: "Visits (human)", clicks: humanVisits },
       { label: "Landing Views", clicks: landingViews },
       { label: "Human Clicks", clicks: humanClicks },
       { label: "Redirects (human)", clicks: redirects },
+      { label: "Redirects (legacy)", clicks: legacyRedirects },
       { label: "Bots", clicks: botHits },
       { label: "Prefetch", clicks: prefetchHits }
     ],
@@ -1175,13 +1190,39 @@ async function exactCount(query: PromiseLike<{ count: number | null; error: { me
   return toNumber(result.count ?? 0);
 }
 
+async function countWithFallback(
+  label: string,
+  buildQuery: (countMode: "exact" | "planned") => PromiseLike<{ count: number | null; error: { message: string } | null }>,
+  timeoutMs: number,
+  options?: {
+    usePlannedFallback?: boolean;
+  }
+): Promise<number> {
+  try {
+    return await withTimeout(exactCount(buildQuery("exact"), label), timeoutMs, label);
+  } catch (error) {
+    console.error(`${label} fallback`, error);
+    if (!options?.usePlannedFallback) {
+      return 0;
+    }
+  }
+
+  try {
+    return await exactCount(buildQuery("planned"), `${label}(planned)`);
+  } catch (error) {
+    console.error(`${label}(planned) fallback`, error);
+    return 0;
+  }
+}
+
 function createVerifiedHumanRedirectCountQuery(
   linkId: string,
-  redirectPath: (typeof VERIFIED_REDIRECT_PATHS)[number]
+  redirectPath: (typeof VERIFIED_REDIRECT_PATHS)[number],
+  countMode: "exact" | "planned" = "exact"
 ) {
   return getSupabaseAdminClient()
     .from("click_events")
-    .select("id", { head: true, count: "exact" })
+    .select("id", { head: true, count: countMode })
     .eq("link_id", linkId)
     .eq("event_type", "redirect")
     .eq("request_method", "GET")
@@ -1189,6 +1230,49 @@ function createVerifiedHumanRedirectCountQuery(
     .contains("metadata", {
       redirect_path: redirectPath
     });
+}
+
+function createRedirectCandidateCountQuery(linkId: string, countMode: "exact" | "planned" = "exact") {
+  return getSupabaseAdminClient()
+    .from("click_events")
+    .select("id", { head: true, count: countMode })
+    .eq("link_id", linkId)
+    .eq("event_type", "redirect")
+    .eq("request_method", "GET")
+    .or("traffic_category.eq.human,traffic_category.eq.unknown,traffic_category.is.null");
+}
+
+function createHumanVisitCountQuery(linkId: string, countMode: "exact" | "planned" = "exact") {
+  return getSupabaseAdminClient()
+    .from("click_events")
+    .select("id", { head: true, count: countMode })
+    .eq("link_id", linkId)
+    .eq("event_type", "visit")
+    .or("traffic_category.eq.human,traffic_category.eq.unknown,traffic_category.is.null");
+}
+
+function createTrafficCategoryCountQuery(
+  linkId: string,
+  trafficCategory: "bot" | "prefetch",
+  countMode: "exact" | "planned" = "exact"
+) {
+  return getSupabaseAdminClient()
+    .from("click_events")
+    .select("id", { head: true, count: countMode })
+    .eq("link_id", linkId)
+    .eq("traffic_category", trafficCategory);
+}
+
+function createEventTypeCountQuery(
+  linkId: string,
+  eventType: "visit" | "landing_view" | "human_click",
+  countMode: "exact" | "planned" = "exact"
+) {
+  return getSupabaseAdminClient()
+    .from("click_events")
+    .select("id", { head: true, count: countMode })
+    .eq("link_id", linkId)
+    .eq("event_type", eventType);
 }
 
 async function getLinkRedirectSummary(linkId: string): Promise<{
@@ -1995,10 +2079,11 @@ export function createEmptyLinkAnalyticsData(): LinkAnalyticsData {
     topDays: DAY_LABELS.map((label) => ({ label, clicks: 0 })),
     popularHours: Array.from({ length: 24 }, (_, hour) => ({ label: `${formatTwoDigits(hour)}:00`, clicks: 0 })),
     clickType: [
-      { label: "Visits", clicks: 0 },
+      { label: "Visits (human)", clicks: 0 },
       { label: "Landing Views", clicks: 0 },
       { label: "Human Clicks", clicks: 0 },
       { label: "Redirects (human)", clicks: 0 },
+      { label: "Redirects (legacy)", clicks: 0 },
       { label: "Bots", clicks: 0 },
       { label: "Prefetch", clicks: 0 }
     ],
@@ -2038,6 +2123,11 @@ async function getLastHumanRedirectAt(
 async function getLinkOverviewViaQueries(linkId: string, timeZone: string): Promise<LinkOverviewStats> {
   const todayStartIso = new Date(getAnalyticsWindow("today", timeZone).startAtMs).toISOString();
 
+  const redirectCandidatesPromise = countWithFallback(
+    "count_redirect_candidates",
+    (countMode) => createRedirectCandidateCountQuery(linkId, countMode),
+    LINK_ANALYTICS_QUERY_TIMEOUT_MS
+  );
   const directRedirectsPromise = safeTimed(
     "count_direct_redirects",
     exactCount(createVerifiedHumanRedirectCountQuery(linkId, "direct"), "count_direct_redirects"),
@@ -2119,73 +2209,45 @@ async function getLinkOverviewViaQueries(linkId: string, timeZone: string): Prom
     null,
     LINK_ANALYTICS_QUERY_TIMEOUT_MS
   );
-  const visitsPromise = safeTimed(
+  const visitsPromise = countWithFallback(
     "count_visits",
-    exactCount(
-      getSupabaseAdminClient()
-        .from("click_events")
-        .select("id", { head: true, count: "exact" })
-        .eq("link_id", linkId)
-        .eq("event_type", "visit"),
-      "count_visits"
-    ),
-    0,
-    LINK_ANALYTICS_OPTIONAL_COUNT_TIMEOUT_MS
+    (countMode) => createEventTypeCountQuery(linkId, "visit", countMode),
+    LINK_ANALYTICS_OPTIONAL_COUNT_TIMEOUT_MS,
+    { usePlannedFallback: true }
   );
   const landingViewsPromise = safeTimed(
     "count_landing_views",
-    exactCount(
-      getSupabaseAdminClient()
-        .from("click_events")
-        .select("id", { head: true, count: "exact" })
-        .eq("link_id", linkId)
-        .eq("event_type", "landing_view"),
-      "count_landing_views"
-    ),
+    exactCount(createEventTypeCountQuery(linkId, "landing_view"), "count_landing_views"),
     0,
     LINK_ANALYTICS_OPTIONAL_COUNT_TIMEOUT_MS
   );
   const humanClicksPromise = safeTimed(
     "count_human_clicks",
-    exactCount(
-      getSupabaseAdminClient()
-        .from("click_events")
-        .select("id", { head: true, count: "exact" })
-        .eq("link_id", linkId)
-        .eq("event_type", "human_click"),
-      "count_human_clicks"
-    ),
+    exactCount(createEventTypeCountQuery(linkId, "human_click"), "count_human_clicks"),
     0,
     LINK_ANALYTICS_OPTIONAL_COUNT_TIMEOUT_MS
   );
   const botHitsPromise = safeTimed(
     "count_bot_hits",
-    exactCount(
-      getSupabaseAdminClient()
-        .from("click_events")
-        .select("id", { head: true, count: "exact" })
-        .eq("link_id", linkId)
-        .eq("traffic_category", "bot"),
-      "count_bot_hits"
-    ),
+    exactCount(createTrafficCategoryCountQuery(linkId, "bot"), "count_bot_hits"),
     0,
     LINK_ANALYTICS_OPTIONAL_COUNT_TIMEOUT_MS
   );
-  const prefetchHitsPromise = safeTimed(
+  const prefetchHitsPromise = countWithFallback(
     "count_prefetch_hits",
-    exactCount(
-      getSupabaseAdminClient()
-        .from("click_events")
-        .select("id", { head: true, count: "exact" })
-        .eq("link_id", linkId)
-        .eq("traffic_category", "prefetch"),
-      "count_prefetch_hits"
-    ),
-    0,
-    LINK_ANALYTICS_OPTIONAL_COUNT_TIMEOUT_MS
+    (countMode) => createTrafficCategoryCountQuery(linkId, "prefetch", countMode),
+    LINK_ANALYTICS_OPTIONAL_COUNT_TIMEOUT_MS,
+    { usePlannedFallback: true }
+  );
+  const humanVisitsPromise = countWithFallback(
+    "count_human_visits",
+    (countMode) => createHumanVisitCountQuery(linkId, countMode),
+    LINK_ANALYTICS_OPTIONAL_COUNT_TIMEOUT_MS,
+    { usePlannedFallback: true }
   );
 
   const [
+    redirectCandidates,
     directRedirects,
     landingContinueRedirects,
     directClicksToday,
@@ -2200,8 +2262,10 @@ async function getLinkOverviewViaQueries(linkId: string, timeZone: string): Prom
     landingViews,
     humanClicks,
     botHits,
-    prefetchHits
+    prefetchHits,
+    humanVisits
   ] = await Promise.all([
+    redirectCandidatesPromise,
     directRedirectsPromise,
     landingContinueRedirectsPromise,
     directClicksTodayPromise,
@@ -2216,13 +2280,15 @@ async function getLinkOverviewViaQueries(linkId: string, timeZone: string): Prom
     landingViewsPromise,
     humanClicksPromise,
     botHitsPromise,
-    prefetchHitsPromise
+    prefetchHitsPromise,
+    humanVisitsPromise
   ]);
 
   const redirects = directRedirects + landingContinueRedirects;
   const clicksToday = directClicksToday + landingContinueClicksToday;
   const uniqueClicks = directUniqueClicks + landingContinueUniqueClicks;
   const nonUniqueClicks = directNonUniqueClicks + landingContinueNonUniqueClicks;
+  const legacyRedirects = Math.max(0, redirectCandidates - redirects);
   const directLastClickMs = directLastClickAt ? Date.parse(directLastClickAt) : Number.NEGATIVE_INFINITY;
   const landingContinueLastClickMs = landingContinueLastClickAt ? Date.parse(landingContinueLastClickAt) : Number.NEGATIVE_INFINITY;
   const lastClickAt =
@@ -2256,9 +2322,22 @@ async function getLinkAnalyticsDataViaQueries(linkId: string, timeZone: string):
   }
 
   const fallback = createEmptyLinkAnalyticsData();
+  const humanVisitsPromise = countWithFallback(
+    "count_human_visits(click_type)",
+    (countMode) => createHumanVisitCountQuery(linkId, countMode),
+    LINK_ANALYTICS_OPTIONAL_COUNT_TIMEOUT_MS,
+    { usePlannedFallback: true }
+  );
+  const legacyRedirectsPromise = countWithFallback(
+    "count_redirect_candidates(click_type)",
+    (countMode) => createRedirectCandidateCountQuery(linkId, countMode),
+    LINK_ANALYTICS_QUERY_TIMEOUT_MS
+  );
 
   const [
     overview,
+    humanVisits,
+    redirectCandidates,
     hoursSeries,
     daysSeries,
     monthsSeries,
@@ -2275,6 +2354,8 @@ async function getLinkAnalyticsDataViaQueries(linkId: string, timeZone: string):
     popularHours
   ] = await Promise.all([
     getLinkOverviewViaQueries(linkId, timeZone),
+    humanVisitsPromise,
+    legacyRedirectsPromise,
     safeTimed("get_link_timeseries(hours)", getLinkTimeseries(linkId, "hours", 24), fallback.timeseries.hours, LINK_ANALYTICS_QUERY_TIMEOUT_MS),
     safeTimed("get_link_timeseries(days)", getLinkTimeseries(linkId, "days", 30), fallback.timeseries.days, LINK_ANALYTICS_QUERY_TIMEOUT_MS),
     safeTimed(
@@ -2339,6 +2420,7 @@ async function getLinkAnalyticsDataViaQueries(linkId: string, timeZone: string):
   const normalizedOverview: LinkOverviewStats = {
     ...overview
   };
+  const legacyRedirects = Math.max(0, redirectCandidates - normalizedOverview.redirects);
 
   const data: LinkAnalyticsData = {
     overview: normalizedOverview,
@@ -2353,10 +2435,11 @@ async function getLinkAnalyticsDataViaQueries(linkId: string, timeZone: string):
     topDays,
     popularHours,
     clickType: [
-      { label: "Visits", clicks: normalizedOverview.visits },
+      { label: "Visits (human)", clicks: humanVisits },
       { label: "Landing Views", clicks: normalizedOverview.landingViews },
       { label: "Human Clicks", clicks: normalizedOverview.humanClicks },
       { label: "Redirects (human)", clicks: normalizedOverview.redirects },
+      { label: "Redirects (legacy)", clicks: legacyRedirects },
       { label: "Bots", clicks: normalizedOverview.botHits },
       { label: "Prefetch", clicks: normalizedOverview.prefetchHits }
     ],
