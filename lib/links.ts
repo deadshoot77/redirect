@@ -322,6 +322,7 @@ const GLOBAL_ANALYTICS_BATCH_SIZE = 1000;
 const CLICK_EVENTS_SCAN_BATCH_SIZE = 1000;
 const LINK_ANALYTICS_QUERY_TIMEOUT_MS = 7_000;
 const LINK_ANALYTICS_OPTIONAL_COUNT_TIMEOUT_MS = 1_500;
+const VERIFIED_REDIRECT_PATHS = ["direct", "landing_continue"] as const;
 const SOCIAL_SOURCES = new Set([
   "facebook",
   "instagram",
@@ -540,6 +541,27 @@ function isHumanRedirectEvent(
   return eventType === "redirect" && requestMethod === "GET" && isHumanRedirectTrafficCategory(trafficCategory);
 }
 
+function getRedirectPath(metadata: unknown): string | null {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+    return null;
+  }
+  const value = (metadata as Record<string, unknown>).redirect_path;
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function isVerifiedHumanRedirectRow(
+  eventType: TrackingEventType,
+  trafficCategory: TrafficCategory,
+  requestMethod: string,
+  metadata: unknown
+): boolean {
+  if (!isHumanRedirectEvent(eventType, trafficCategory, requestMethod)) {
+    return false;
+  }
+  const redirectPath = getRedirectPath(metadata);
+  return redirectPath === "direct" || redirectPath === "landing_continue";
+}
+
 async function getLinkListStatsFromEvents(
   linkIds: string[],
   timeZone = DEFAULT_ANALYTICS_TIME_ZONE
@@ -672,7 +694,7 @@ async function getLinkAnalyticsDataFromEvents(linkId: string, timeZone: string):
           prefetchHits += 1;
         }
 
-        const isHumanRedirect = isHumanRedirectEvent(eventType, trafficCategory, requestMethod);
+        const isHumanRedirect = isVerifiedHumanRedirectRow(eventType, trafficCategory, requestMethod, row.metadata);
         if (!isHumanRedirect) {
           continue;
         }
@@ -1153,14 +1175,20 @@ async function exactCount(query: PromiseLike<{ count: number | null; error: { me
   return toNumber(result.count ?? 0);
 }
 
-function createHumanRedirectCountQuery(linkId: string) {
+function createVerifiedHumanRedirectCountQuery(
+  linkId: string,
+  redirectPath: (typeof VERIFIED_REDIRECT_PATHS)[number]
+) {
   return getSupabaseAdminClient()
     .from("click_events")
     .select("id", { head: true, count: "exact" })
     .eq("link_id", linkId)
     .eq("event_type", "redirect")
     .eq("request_method", "GET")
-    .or("traffic_category.eq.human,traffic_category.eq.unknown,traffic_category.is.null");
+    .eq("traffic_category", "human")
+    .contains("metadata", {
+      redirect_path: redirectPath
+    });
 }
 
 async function getLinkRedirectSummary(linkId: string): Promise<{
@@ -1176,27 +1204,20 @@ async function getLinkRedirectSummary(linkId: string): Promise<{
     };
   }
 
-  const [clicksReceived, lastClickResult] = await Promise.all([
-    exactCount(createHumanRedirectCountQuery(linkId), "countLinkRedirects"),
-    getSupabaseAdminClient()
-      .from("click_events")
-      .select("created_at")
-      .eq("link_id", linkId)
-      .eq("event_type", "redirect")
-      .eq("request_method", "GET")
-      .or("traffic_category.eq.human,traffic_category.eq.unknown,traffic_category.is.null")
-      .order("created_at", { ascending: false })
-      .limit(1)
+  const [directCount, landingContinueCount, directLastClickAt, landingContinueLastClickAt] = await Promise.all([
+    exactCount(createVerifiedHumanRedirectCountQuery(linkId, "direct"), "countLinkRedirects(direct)"),
+    exactCount(createVerifiedHumanRedirectCountQuery(linkId, "landing_continue"), "countLinkRedirects(landing_continue)"),
+    getLastHumanRedirectAt(linkId, "direct"),
+    getLastHumanRedirectAt(linkId, "landing_continue")
   ]);
 
-  if (lastClickResult.error) {
-    throw new Error(`getLinkRedirectSummary last click failed: ${lastClickResult.error.message}`);
-  }
-
+  const directLastClickMs = directLastClickAt ? Date.parse(directLastClickAt) : Number.NEGATIVE_INFINITY;
+  const landingContinueLastClickMs = landingContinueLastClickAt ? Date.parse(landingContinueLastClickAt) : Number.NEGATIVE_INFINITY;
   const lastClickAt =
-    Array.isArray(lastClickResult.data) && lastClickResult.data.length > 0
-      ? toStringOrNull(lastClickResult.data[0]?.created_at)
-      : null;
+    directLastClickMs >= landingContinueLastClickMs && Number.isFinite(directLastClickMs)
+      ? directLastClickAt
+      : landingContinueLastClickAt;
+  const clicksReceived = directCount + landingContinueCount;
 
   cachedRuntimeLinkListStats.set(linkId, {
     clicksReceived,
@@ -1416,7 +1437,7 @@ async function aggregateGlobalAnalytics(window: AnalyticsWindow): Promise<Aggreg
           prefetchHits += 1;
         }
 
-        const isHumanRedirect = isHumanRedirectEvent(eventType, trafficCategory, requestMethod);
+        const isHumanRedirect = isVerifiedHumanRedirectRow(eventType, trafficCategory, requestMethod, row.metadata);
         if (!isHumanRedirect) {
           continue;
         }
@@ -1990,14 +2011,20 @@ export function createEmptyLinkAnalyticsData(): LinkAnalyticsData {
   };
 }
 
-async function getLastHumanRedirectAt(linkId: string): Promise<string | null> {
+async function getLastHumanRedirectAt(
+  linkId: string,
+  redirectPath: (typeof VERIFIED_REDIRECT_PATHS)[number]
+): Promise<string | null> {
   const result = await getSupabaseAdminClient()
     .from("click_events")
     .select("created_at")
     .eq("link_id", linkId)
     .eq("event_type", "redirect")
     .eq("request_method", "GET")
-    .or("traffic_category.eq.human,traffic_category.eq.unknown,traffic_category.is.null")
+    .eq("traffic_category", "human")
+    .contains("metadata", {
+      redirect_path: redirectPath
+    })
     .order("created_at", { ascending: false })
     .limit(1);
 
@@ -2011,47 +2038,86 @@ async function getLastHumanRedirectAt(linkId: string): Promise<string | null> {
 async function getLinkOverviewViaQueries(linkId: string, timeZone: string): Promise<LinkOverviewStats> {
   const todayStartIso = new Date(getAnalyticsWindow("today", timeZone).startAtMs).toISOString();
 
-  const redirectsPromise = safeTimed(
-    "count_redirects",
-    exactCount(createHumanRedirectCountQuery(linkId), "count_redirects"),
+  const directRedirectsPromise = safeTimed(
+    "count_direct_redirects",
+    exactCount(createVerifiedHumanRedirectCountQuery(linkId, "direct"), "count_direct_redirects"),
     0,
     LINK_ANALYTICS_QUERY_TIMEOUT_MS
   );
-  const clicksTodayPromise = safeTimed(
-    "count_redirects_today",
-    exactCount(createHumanRedirectCountQuery(linkId).gte("created_at", todayStartIso), "count_redirects_today"),
+  const landingContinueRedirectsPromise = safeTimed(
+    "count_landing_continue_redirects",
+    exactCount(
+      createVerifiedHumanRedirectCountQuery(linkId, "landing_continue"),
+      "count_landing_continue_redirects"
+    ),
     0,
     LINK_ANALYTICS_QUERY_TIMEOUT_MS
   );
-  const uniqueClicksPromise = safeTimed(
-    "count_unique_redirects",
-    exactCount(createHumanRedirectCountQuery(linkId).eq("is_unique", true), "count_unique_redirects"),
+  const directClicksTodayPromise = safeTimed(
+    "count_direct_redirects_today",
+    exactCount(
+      createVerifiedHumanRedirectCountQuery(linkId, "direct").gte("created_at", todayStartIso),
+      "count_direct_redirects_today"
+    ),
     0,
     LINK_ANALYTICS_QUERY_TIMEOUT_MS
   );
-  const nonUniqueClicksPromise = safeTimed(
-    "count_non_unique_redirects",
-    exactCount(createHumanRedirectCountQuery(linkId).eq("is_unique", false), "count_non_unique_redirects"),
+  const landingContinueClicksTodayPromise = safeTimed(
+    "count_landing_continue_redirects_today",
+    exactCount(
+      createVerifiedHumanRedirectCountQuery(linkId, "landing_continue").gte("created_at", todayStartIso),
+      "count_landing_continue_redirects_today"
+    ),
     0,
     LINK_ANALYTICS_QUERY_TIMEOUT_MS
   );
-  const lastClickAtPromise = safeTimed(
-    "last_human_redirect",
-    getLastHumanRedirectAt(linkId),
+  const directUniqueClicksPromise = safeTimed(
+    "count_direct_unique_redirects",
+    exactCount(
+      createVerifiedHumanRedirectCountQuery(linkId, "direct").eq("is_unique", true),
+      "count_direct_unique_redirects"
+    ),
+    0,
+    LINK_ANALYTICS_QUERY_TIMEOUT_MS
+  );
+  const landingContinueUniqueClicksPromise = safeTimed(
+    "count_landing_continue_unique_redirects",
+    exactCount(
+      createVerifiedHumanRedirectCountQuery(linkId, "landing_continue").eq("is_unique", true),
+      "count_landing_continue_unique_redirects"
+    ),
+    0,
+    LINK_ANALYTICS_QUERY_TIMEOUT_MS
+  );
+  const directNonUniqueClicksPromise = safeTimed(
+    "count_direct_non_unique_redirects",
+    exactCount(
+      createVerifiedHumanRedirectCountQuery(linkId, "direct").eq("is_unique", false),
+      "count_direct_non_unique_redirects"
+    ),
+    0,
+    LINK_ANALYTICS_QUERY_TIMEOUT_MS
+  );
+  const landingContinueNonUniqueClicksPromise = safeTimed(
+    "count_landing_continue_non_unique_redirects",
+    exactCount(
+      createVerifiedHumanRedirectCountQuery(linkId, "landing_continue").eq("is_unique", false),
+      "count_landing_continue_non_unique_redirects"
+    ),
+    0,
+    LINK_ANALYTICS_QUERY_TIMEOUT_MS
+  );
+  const directLastClickAtPromise = safeTimed(
+    "last_direct_human_redirect",
+    getLastHumanRedirectAt(linkId, "direct"),
     null,
     LINK_ANALYTICS_QUERY_TIMEOUT_MS
   );
-
-  const directRedirectsPromise = safeTimed(
-    "count_direct_redirects",
-    exactCount(
-      createHumanRedirectCountQuery(linkId).contains("metadata", {
-        redirect_path: "direct"
-      }),
-      "count_direct_redirects"
-    ),
-    0,
-    LINK_ANALYTICS_OPTIONAL_COUNT_TIMEOUT_MS
+  const landingContinueLastClickAtPromise = safeTimed(
+    "last_landing_continue_human_redirect",
+    getLastHumanRedirectAt(linkId, "landing_continue"),
+    null,
+    LINK_ANALYTICS_QUERY_TIMEOUT_MS
   );
   const visitsPromise = safeTimed(
     "count_visits",
@@ -2120,30 +2186,49 @@ async function getLinkOverviewViaQueries(linkId: string, timeZone: string): Prom
   );
 
   const [
-    redirects,
-    clicksToday,
-    uniqueClicks,
-    nonUniqueClicks,
-    lastClickAt,
     directRedirects,
+    landingContinueRedirects,
+    directClicksToday,
+    landingContinueClicksToday,
+    directUniqueClicks,
+    landingContinueUniqueClicks,
+    directNonUniqueClicks,
+    landingContinueNonUniqueClicks,
+    directLastClickAt,
+    landingContinueLastClickAt,
     visits,
     landingViews,
     humanClicks,
     botHits,
     prefetchHits
   ] = await Promise.all([
-    redirectsPromise,
-    clicksTodayPromise,
-    uniqueClicksPromise,
-    nonUniqueClicksPromise,
-    lastClickAtPromise,
     directRedirectsPromise,
+    landingContinueRedirectsPromise,
+    directClicksTodayPromise,
+    landingContinueClicksTodayPromise,
+    directUniqueClicksPromise,
+    landingContinueUniqueClicksPromise,
+    directNonUniqueClicksPromise,
+    landingContinueNonUniqueClicksPromise,
+    directLastClickAtPromise,
+    landingContinueLastClickAtPromise,
     visitsPromise,
     landingViewsPromise,
     humanClicksPromise,
     botHitsPromise,
     prefetchHitsPromise
   ]);
+
+  const redirects = directRedirects + landingContinueRedirects;
+  const clicksToday = directClicksToday + landingContinueClicksToday;
+  const uniqueClicks = directUniqueClicks + landingContinueUniqueClicks;
+  const nonUniqueClicks = directNonUniqueClicks + landingContinueNonUniqueClicks;
+  const directLastClickMs = directLastClickAt ? Date.parse(directLastClickAt) : Number.NEGATIVE_INFINITY;
+  const landingContinueLastClickMs = landingContinueLastClickAt ? Date.parse(landingContinueLastClickAt) : Number.NEGATIVE_INFINITY;
+  const lastClickAt =
+    directLastClickMs >= landingContinueLastClickMs && Number.isFinite(directLastClickMs)
+      ? directLastClickAt
+      : landingContinueLastClickAt;
 
   return {
     totalClicks: redirects,
@@ -2252,8 +2337,7 @@ async function getLinkAnalyticsDataViaQueries(linkId: string, timeZone: string):
   ]);
 
   const normalizedOverview: LinkOverviewStats = {
-    ...overview,
-    clicksToday: hoursSeries.length > 0 ? sumCurrentDayClicks(hoursSeries, timeZone) : overview.clicksToday
+    ...overview
   };
 
   const data: LinkAnalyticsData = {
