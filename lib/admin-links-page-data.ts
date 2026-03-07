@@ -6,7 +6,7 @@ import {
   type PaginatedShortLinks
 } from "@/lib/links";
 
-const ADMIN_LINK_STATS_TIMEOUT_MS = 2_500;
+const ADMIN_LINK_STATS_TIMEOUT_MS = 10_000;
 
 export interface AdminLinksPageDataResult {
   links: PaginatedShortLinks;
@@ -39,8 +39,7 @@ function withTimeout<T>(operation: Promise<T>, timeoutMs: number, label: string)
 function normalizeLinkRedirectSummary(summary?: Partial<LinkRedirectSummary> | null): LinkRedirectSummary {
   return {
     clicksReceived: Number.isFinite(Number(summary?.clicksReceived)) ? Number(summary?.clicksReceived) : 0,
-    clicksToday: Number.isFinite(Number(summary?.clicksToday)) ? Number(summary?.clicksToday) : 0,
-    lastClickAt: typeof summary?.lastClickAt === "string" && summary.lastClickAt.length > 0 ? summary.lastClickAt : null
+    clicksToday: Number.isFinite(Number(summary?.clicksToday)) ? Number(summary?.clicksToday) : 0
   };
 }
 
@@ -55,8 +54,7 @@ export function enrichPaginatedShortLinksWithStats(
       return {
         ...link,
         clicksReceived: stats.clicksReceived,
-        clicksToday: stats.clicksToday,
-        lastClickAt: stats.lastClickAt
+        clicksToday: stats.clicksToday
       };
     })
   };
@@ -70,6 +68,7 @@ export async function loadAdminLinksPageData(
   const listPage = options?.listPage ?? listShortLinksPage;
   const getStats = options?.getStats ?? getLinksRedirectSummariesBatch;
   const links = await listPage(page, pageSize);
+  const statsStartedAt = Date.now();
 
   if (links.items.length === 0) {
     return {
@@ -92,9 +91,21 @@ export async function loadAdminLinksPageData(
       console.error("loadAdminLinksPageData partial stats fallback", {
         page: links.page,
         pageSize: links.pageSize,
-        timeZone: options?.timeZone ?? "default"
+        timeZone: options?.timeZone ?? "default",
+        durationMs: Date.now() - statsStartedAt,
+        linksCount: links.items.length,
+        fallbackUsed: true
       });
     }
+
+    console.info("loadAdminLinksPageData stats resolved", {
+      page: links.page,
+      pageSize: links.pageSize,
+      timeZone: options?.timeZone ?? "default",
+      durationMs: Date.now() - statsStartedAt,
+      linksCount: links.items.length,
+      fallbackUsed: statsResult.fallback
+    });
 
     return {
       links: enrichPaginatedShortLinksWithStats(links, statsResult.stats),
@@ -105,11 +116,14 @@ export async function loadAdminLinksPageData(
       page: links.page,
       pageSize: links.pageSize,
       timeZone: options?.timeZone ?? "default",
+      durationMs: Date.now() - statsStartedAt,
+      linksCount: links.items.length,
+      fallbackUsed: true,
       error: error instanceof Error ? error.message : error
     });
 
     return {
-      links: enrichPaginatedShortLinksWithStats(links),
+      links,
       linkStatsFallback: true
     };
   }

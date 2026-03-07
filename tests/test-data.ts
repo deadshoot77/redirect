@@ -21,8 +21,7 @@ export const sampleLinksPage: PaginatedShortLinks = {
       backgroundUrl: null,
       isActive: true,
       clicksReceived: 0,
-      clicksToday: 0,
-      lastClickAt: null
+      clicksToday: 0
     }
   ],
   page: 1,
@@ -34,8 +33,7 @@ export const sampleLinksPage: PaginatedShortLinks = {
 export const sampleLinkStats: Record<string, LinkRedirectSummary> = {
   link_1: {
     clicksReceived: 7,
-    clicksToday: 2,
-    lastClickAt: "2026-03-07T08:15:00.000Z"
+    clicksToday: 2
   }
 };
 
@@ -58,7 +56,6 @@ export const emptyGlobalAnalytics: GlobalAnalyticsData = {
     totalClicks: 0,
     qrScans: 0,
     clicksToday: 0,
-    lastClickAt: null,
     uniqueClicks: 0,
     nonUniqueClicks: 0,
     visits: 0,

@@ -658,6 +658,7 @@ as $$
     and ce.created_at < (date_trunc('month', now()) + interval '1 month');
 $$;
 
+drop function if exists public.list_short_links_with_stats(integer, integer);
 create or replace function public.list_short_links_with_stats(p_limit integer default 25, p_offset integer default 0)
 returns table (
   id uuid,
@@ -668,8 +669,7 @@ returns table (
   tags text[],
   redirect_type integer,
   clicks_received bigint,
-  clicks_today bigint,
-  last_click_at timestamptz
+  clicks_today bigint
 )
 language sql
 security definer
@@ -697,8 +697,7 @@ as $$
     select
       ce.link_id,
       count(*)::bigint as clicks_received,
-      count(*) filter (where ce.created_at >= date_trunc('day', now()))::bigint as clicks_today,
-      max(ce.created_at) as last_click_at
+      count(*) filter (where ce.created_at >= date_trunc('day', now()))::bigint as clicks_today
     from public.click_events ce
     where ce.link_id in (select p.id from paged p)
     group by ce.link_id
@@ -712,8 +711,7 @@ as $$
     p.tags,
     p.redirect_type,
     coalesce(a.clicks_received, 0)::bigint as clicks_received,
-    coalesce(a.clicks_today, 0)::bigint as clicks_today,
-    a.last_click_at
+    coalesce(a.clicks_today, 0)::bigint as clicks_today
   from paged p
   left join aggregated a on a.link_id = p.id
   order by p.created_at desc;
@@ -725,7 +723,6 @@ returns table (
   total_clicks bigint,
   qr_scans bigint,
   clicks_today bigint,
-  last_click_at timestamptz,
   unique_clicks bigint,
   non_unique_clicks bigint
 )
@@ -737,7 +734,6 @@ as $$
     count(*)::bigint as total_clicks,
     0::bigint as qr_scans,
     count(*) filter (where ce.created_at >= date_trunc('day', now()))::bigint as clicks_today,
-    max(ce.created_at) as last_click_at,
     count(*) filter (where ce.is_unique = true)::bigint as unique_clicks,
     count(*) filter (where ce.is_unique = false)::bigint as non_unique_clicks
   from public.click_events ce
@@ -944,6 +940,57 @@ grant execute on function public.get_link_day_breakdown(uuid) to service_role;
 
 revoke all on function public.get_link_hour_breakdown(uuid) from public, anon, authenticated;
 grant execute on function public.get_link_hour_breakdown(uuid) to service_role;
+ 
+drop function if exists public.get_links_redirect_summaries_batch(uuid[], text);
+create or replace function public.get_links_redirect_summaries_batch(
+  p_link_ids uuid[],
+  p_time_zone text default 'Europe/Paris'
+)
+returns table (
+  link_id uuid,
+  clicks_received bigint,
+  clicks_today bigint
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  return query
+  with requested as (
+    select distinct unnest(coalesce(p_link_ids, '{}'::uuid[])) as link_id
+  ),
+  bounds as (
+    select
+      (
+        date_trunc('day', now() at time zone coalesce(nullif(p_time_zone, ''), 'Europe/Paris'))
+        at time zone coalesce(nullif(p_time_zone, ''), 'Europe/Paris')
+      ) as day_start_utc
+  ),
+  aggregated as (
+    select
+      ce.link_id,
+      count(*)::bigint as clicks_received,
+      count(*) filter (where ce.created_at >= (select day_start_utc from bounds))::bigint as clicks_today
+    from public.click_events ce
+    where ce.link_id in (select r.link_id from requested r)
+      and ce.event_type = 'redirect'
+      and coalesce(ce.request_method, 'GET') = 'GET'
+      and coalesce(ce.traffic_category, 'unknown') = 'human'
+    group by ce.link_id
+  )
+  select
+    r.link_id,
+    coalesce(a.clicks_received, 0)::bigint as clicks_received,
+    coalesce(a.clicks_today, 0)::bigint as clicks_today
+  from requested r
+  left join aggregated a on a.link_id = r.link_id
+  order by r.link_id asc;
+end;
+$$;
+
+revoke all on function public.get_links_redirect_summaries_batch(uuid[], text) from public, anon, authenticated;
+grant execute on function public.get_links_redirect_summaries_batch(uuid[], text) to service_role;
 
 insert into public.admin_settings (id, plan, click_limit_monthly, tracking_enabled, limit_behavior)
 values (1, 'free', 10000, true, 'drop')
@@ -1091,8 +1138,7 @@ returns table (
   tags text[],
   redirect_type integer,
   clicks_received bigint,
-  clicks_today bigint,
-  last_click_at timestamptz
+  clicks_today bigint
 )
 language sql
 security definer
@@ -1122,19 +1168,14 @@ as $$
       count(*) filter (
         where ce.event_type = 'redirect'
           and coalesce(ce.request_method, 'GET') = 'GET'
-          and coalesce(ce.traffic_category, 'unknown') not in ('bot', 'prefetch')
+          and coalesce(ce.traffic_category, 'unknown') = 'human'
       )::bigint as clicks_received,
       count(*) filter (
         where ce.event_type = 'redirect'
           and coalesce(ce.request_method, 'GET') = 'GET'
-          and coalesce(ce.traffic_category, 'unknown') not in ('bot', 'prefetch')
+          and coalesce(ce.traffic_category, 'unknown') = 'human'
           and ce.created_at >= date_trunc('day', now())
-      )::bigint as clicks_today,
-      max(ce.created_at) filter (
-        where ce.event_type = 'redirect'
-          and coalesce(ce.request_method, 'GET') = 'GET'
-          and coalesce(ce.traffic_category, 'unknown') not in ('bot', 'prefetch')
-      ) as last_click_at
+      )::bigint as clicks_today
     from public.click_events ce
     where ce.link_id in (select p.id from paged p)
     group by ce.link_id
@@ -1148,8 +1189,7 @@ as $$
     p.tags,
     p.redirect_type,
     coalesce(a.clicks_received, 0)::bigint as clicks_received,
-    coalesce(a.clicks_today, 0)::bigint as clicks_today,
-    a.last_click_at
+    coalesce(a.clicks_today, 0)::bigint as clicks_today
   from paged p
   left join aggregated a on a.link_id = p.id
   order by p.created_at desc;
@@ -1161,7 +1201,6 @@ returns table (
   total_clicks bigint,
   qr_scans bigint,
   clicks_today bigint,
-  last_click_at timestamptz,
   unique_clicks bigint,
   non_unique_clicks bigint,
   visits bigint,
@@ -1180,30 +1219,25 @@ as $$
     count(*) filter (
       where ce.event_type = 'redirect'
         and coalesce(ce.request_method, 'GET') = 'GET'
-        and coalesce(ce.traffic_category, 'unknown') not in ('bot', 'prefetch')
+        and coalesce(ce.traffic_category, 'unknown') = 'human'
     )::bigint as total_clicks,
     0::bigint as qr_scans,
     count(*) filter (
       where ce.event_type = 'redirect'
         and coalesce(ce.request_method, 'GET') = 'GET'
-        and coalesce(ce.traffic_category, 'unknown') not in ('bot', 'prefetch')
+        and coalesce(ce.traffic_category, 'unknown') = 'human'
         and ce.created_at >= date_trunc('day', now())
     )::bigint as clicks_today,
-    max(ce.created_at) filter (
-      where ce.event_type = 'redirect'
-        and coalesce(ce.request_method, 'GET') = 'GET'
-        and coalesce(ce.traffic_category, 'unknown') not in ('bot', 'prefetch')
-    ) as last_click_at,
     count(*) filter (
       where ce.event_type = 'redirect'
         and coalesce(ce.request_method, 'GET') = 'GET'
-        and coalesce(ce.traffic_category, 'unknown') not in ('bot', 'prefetch')
+        and coalesce(ce.traffic_category, 'unknown') = 'human'
         and ce.is_unique = true
     )::bigint as unique_clicks,
     count(*) filter (
       where ce.event_type = 'redirect'
         and coalesce(ce.request_method, 'GET') = 'GET'
-        and coalesce(ce.traffic_category, 'unknown') not in ('bot', 'prefetch')
+        and coalesce(ce.traffic_category, 'unknown') = 'human'
         and ce.is_unique = false
     )::bigint as non_unique_clicks,
     count(*) filter (where ce.event_type = 'visit')::bigint as visits,
@@ -1212,12 +1246,12 @@ as $$
     count(*) filter (
       where ce.event_type = 'redirect'
         and coalesce(ce.request_method, 'GET') = 'GET'
-        and coalesce(ce.traffic_category, 'unknown') not in ('bot', 'prefetch')
+        and coalesce(ce.traffic_category, 'unknown') = 'human'
     )::bigint as redirects,
     count(*) filter (
       where ce.event_type = 'redirect'
         and coalesce(ce.request_method, 'GET') = 'GET'
-        and coalesce(ce.traffic_category, 'unknown') not in ('bot', 'prefetch')
+        and coalesce(ce.traffic_category, 'unknown') = 'human'
         and coalesce(ce.metadata->>'redirect_path', '') = 'direct'
     )::bigint as direct_redirects,
     count(*) filter (where ce.traffic_category = 'bot')::bigint as bot_hits,

@@ -3,7 +3,10 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Redirect Analytics Dashboard",
-  description: "Short links, routing rules, redirect tracking, and Rebrandly-like analytics cards."
+  description: "Short links, routing rules, redirect tracking, and Rebrandly-like analytics cards.",
+  icons: {
+    icon: "/favicon.ico"
+  }
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

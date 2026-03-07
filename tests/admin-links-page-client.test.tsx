@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import React, { type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import AdminLinksPageClient from "@/components/admin-links-page-client";
@@ -77,8 +77,7 @@ describe("AdminLinksPageClient", () => {
     expect(screen.getByText("Certaines statistiques n'ont pas pu etre chargees.")).toBeInTheDocument();
     expect(screen.queryByText("Aucun lien pour le moment.")).not.toBeInTheDocument();
 
-    await waitFor(() => {
-      expect(fetch).toHaveBeenCalled();
-    });
+    expect(screen.getByText("Indisponible")).toBeInTheDocument();
+    expect(fetch).not.toHaveBeenCalled();
   });
 });

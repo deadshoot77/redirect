@@ -19,7 +19,6 @@ describe("admin links page data", () => {
     expect(enriched.items).toHaveLength(1);
     expect(enriched.items[0].clicksReceived).toBe(7);
     expect(enriched.items[0].clicksToday).toBe(2);
-    expect(enriched.items[0].lastClickAt).toBe("2026-03-07T08:15:00.000Z");
   });
 
   it("keeps links visible with fallback stats when stats are missing", () => {
@@ -29,10 +28,11 @@ describe("admin links page data", () => {
     expect(enriched.items[0].slug).toBe("offer");
     expect(enriched.items[0].clicksReceived).toBe(0);
     expect(enriched.items[0].clicksToday).toBe(0);
-    expect(enriched.items[0].lastClickAt).toBeNull();
   });
 
   it("returns links and a fallback flag when stats provider times out", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const consoleInfo = vi.spyOn(console, "info").mockImplementation(() => undefined);
     const result = await loadAdminLinksPageData(1, 20, {
       listPage: vi.fn().mockResolvedValue(sampleLinksPage),
       getStats: vi
@@ -44,6 +44,7 @@ describe("admin links page data", () => {
     expect(result.links.items).toHaveLength(1);
     expect(result.links.items[0].slug).toBe("offer");
     expect(result.links.items[0].clicksReceived).toBe(0);
-    expect(result.links.items[0].lastClickAt).toBeNull();
+    expect(consoleError).toHaveBeenCalled();
+    expect(consoleInfo).not.toHaveBeenCalled();
   });
 });

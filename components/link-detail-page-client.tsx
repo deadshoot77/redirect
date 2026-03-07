@@ -19,7 +19,6 @@ const EMPTY_LINK_ANALYTICS: LinkAnalyticsData = {
     totalClicks: 0,
     qrScans: 0,
     clicksToday: 0,
-    lastClickAt: null,
     uniqueClicks: 0,
     nonUniqueClicks: 0,
     visits: 0,

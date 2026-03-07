@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import AdminCharts from "@/components/admin-charts";
 import ChartErrorBoundary from "@/components/chart-error-boundary";
 import AdminLanguageToggle from "@/components/admin-language-toggle";
@@ -32,7 +32,6 @@ interface NewLinkFormState {
 interface LinkListStat {
   clicksReceived: number;
   clicksToday: number;
-  lastClickAt: string | null;
 }
 
 const words = {
@@ -118,6 +117,7 @@ const words = {
     copiedPrefix: "Copie",
     never: "Jamais",
     clicks: "redirections humaines",
+    statsUnavailable: "Indisponible",
     zeroStatsHint: "Stats a 0: verifie tracking actif + migration SQL a jour (db/migrations.sql).",
     linkStatsFallbackHint: "Certaines statistiques n'ont pas pu etre chargees.",
     analyticsFallbackHint: "Analytics temporairement indisponibles, affichage des valeurs de secours.",
@@ -205,6 +205,7 @@ const words = {
     copiedPrefix: "Copied",
     never: "Never",
     clicks: "human redirects",
+    statsUnavailable: "Unavailable",
     zeroStatsHint: "Zero stats: verify tracking enabled and latest SQL migration applied (db/migrations.sql).",
     linkStatsFallbackHint: "Some link statistics could not be loaded.",
     analyticsFallbackHint: "Analytics are temporarily unavailable, showing fallback values.",
@@ -255,8 +256,7 @@ function toSafeNumber(value: unknown): number {
 function normalizeLinkListStat(value?: Partial<LinkListStat> | null): LinkListStat {
   return {
     clicksReceived: toSafeNumber(value?.clicksReceived),
-    clicksToday: toSafeNumber(value?.clicksToday),
-    lastClickAt: typeof value?.lastClickAt === "string" && value.lastClickAt.length > 0 ? value.lastClickAt : null
+    clicksToday: toSafeNumber(value?.clicksToday)
   };
 }
 
@@ -274,8 +274,7 @@ function normalizeLinksPayload(links: PaginatedShortLinks): PaginatedShortLinks 
             ...link,
             tags: Array.isArray(link.tags) ? link.tags : [],
             clicksReceived: stats.clicksReceived,
-            clicksToday: stats.clicksToday,
-            lastClickAt: stats.lastClickAt
+            clicksToday: stats.clicksToday
           };
         })
       : []
@@ -370,7 +369,6 @@ export default function AdminLinksPageClient({
   const [loadedAnalyticsRange, setLoadedAnalyticsRange] = useState<AnalyticsRange | null>(
     initialGlobalAnalyticsLoaded ? "today" : null
   );
-  const visibleLinkStatsRequestsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     setOrigin(window.location.origin);
@@ -402,7 +400,11 @@ export default function AdminLinksPageClient({
 
       for (const [id, stat] of Object.entries(nextStats)) {
         const previous = current[id];
-        if (!previous || previous.clicksReceived !== stat.clicksReceived || previous.lastClickAt !== stat.lastClickAt) {
+        if (
+          !previous ||
+          previous.clicksReceived !== stat.clicksReceived ||
+          previous.clicksToday !== stat.clicksToday
+        ) {
           merged[id] = stat;
           changed = true;
         }
@@ -421,74 +423,6 @@ export default function AdminLinksPageClient({
     }
     void refresh(links.page, { includeAnalytics: true, silent: globalAnalyticsLoaded, analyticsRange });
   }, [activeSection, analyticsRange, globalAnalyticsLoaded, loadedAnalyticsRange, loadingAnalyticsData, links.page]);
-
-  useEffect(() => {
-    if (links.items.length === 0) {
-      return;
-    }
-
-    const missingIds = links.items
-      .map((link) => link.id)
-      .filter((id) => !linkListStats[id] && !visibleLinkStatsRequestsRef.current.has(id));
-    if (missingIds.length === 0) {
-      return;
-    }
-
-    let cancelled = false;
-    for (const id of missingIds) {
-      visibleLinkStatsRequestsRef.current.add(id);
-    }
-
-    async function loadVisibleLinkStats() {
-      try {
-        const timeZoneParam = encodeURIComponent(clientTimeZone);
-        const response = await fetch(
-          `/api/admin/links/stats?ids=${encodeURIComponent(missingIds.join(","))}&tz=${timeZoneParam}`,
-          {
-            cache: "no-store",
-            credentials: "include"
-          }
-        );
-        const payload = (await response.json().catch(() => null)) as
-          | {
-              stats?: Record<string, LinkListStat>;
-              statsFallback?: boolean;
-              error?: string;
-            }
-          | null;
-
-        if (!response.ok || !payload?.stats) {
-          throw new Error(toErrorMessage(payload, "Failed to load link stats"));
-        }
-
-        if (!cancelled) {
-          const normalizedStats = Object.fromEntries(
-            Object.entries(payload.stats).map(([id, stat]) => [id, normalizeLinkListStat(stat)])
-          );
-          setLinkListStats((current) => ({
-            ...current,
-            ...normalizedStats
-          }));
-          setLinkStatsFallback(Boolean(payload.statsFallback));
-        }
-      } catch (error) {
-        if (!cancelled) {
-          console.error("visible link stats fallback", error);
-          setLinkStatsFallback(true);
-        }
-      } finally {
-        for (const id of missingIds) {
-          visibleLinkStatsRequestsRef.current.delete(id);
-        }
-      }
-    }
-
-    void loadVisibleLinkStats();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [clientTimeZone, linkListStats, links.items]);
 
   useEffect(() => {
     if (activeSection !== "analytics" || globalAnalyticsLoaded) {
@@ -571,6 +505,9 @@ export default function AdminLinksPageClient({
 
   function formatLinkClicks(linkId: string, fallbackValue: number): string {
     const loaded = linkListStats[linkId];
+    if (linkStatsFallback && !loaded) {
+      return copy.statsUnavailable;
+    }
     return formatNumber(loaded?.clicksReceived ?? fallbackValue, lang);
   }
 

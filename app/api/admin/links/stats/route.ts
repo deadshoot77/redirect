@@ -26,16 +26,25 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ stats: {}, statsFallback: false });
   }
 
+  const startedAt = Date.now();
+
   try {
     const result = await getLinksRedirectSummariesBatch(ids, timeZone);
-    if (result.fallback) {
-      console.error("admin links stats route fallback used", {
-        idsCount: ids.length,
-        timeZone: timeZone ?? "default"
-      });
-    }
+    console.info("admin links stats route resolved", {
+      idsCount: ids.length,
+      timeZone: timeZone ?? "default",
+      durationMs: Date.now() - startedAt,
+      fallbackUsed: result.fallback
+    });
     return NextResponse.json({ stats: result.stats, statsFallback: result.fallback });
   } catch (error) {
+    console.error("admin links stats route failed", {
+      idsCount: ids.length,
+      timeZone: timeZone ?? "default",
+      durationMs: Date.now() - startedAt,
+      fallbackUsed: true,
+      error: error instanceof Error ? error.message : error
+    });
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Failed to fetch link stats" },
       { status: 500 }

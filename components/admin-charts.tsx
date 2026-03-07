@@ -97,8 +97,6 @@ const rebrandlyWords = {
     totalClicks: "Redirects (humains)",
     qrScans: "Scans QR",
     clicksToday: "Clics aujourd'hui",
-    lastClick: "Dernier clic",
-    noLastClick: "Aucune donnee",
     geoDistribution: "Repartition geographique",
     clickType: "Type de clic",
     uniqueSplit: "Redirects humains: uniques vs non-uniques",
@@ -130,8 +128,6 @@ const rebrandlyWords = {
     totalClicks: "Redirects (human)",
     qrScans: "QR scans",
     clicksToday: "Clicks today",
-    lastClick: "Last click",
-    noLastClick: "No data",
     geoDistribution: "Geographic distribution",
     clickType: "Click type",
     uniqueSplit: "Human redirects: unique vs non-unique",
@@ -156,19 +152,6 @@ const rebrandlyWords = {
 
 function formatNumber(value: number, lang: AdminLang): string {
   return new Intl.NumberFormat(lang === "fr" ? "fr-FR" : "en-US").format(value);
-}
-
-function formatLastClick(value: string | null, lang: AdminLang): string {
-  if (!value) return rebrandlyWords[lang].noLastClick;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString(lang === "fr" ? "fr-FR" : "en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    timeZone: "UTC"
-  });
 }
 
 function formatPercent(value: number, lang: AdminLang): string {
@@ -664,10 +647,6 @@ function RebrandlyCharts(props: RebrandlyChartsProps) {
           <article>
             <span>{copy.clicksToday}</span>
             <strong>{formatNumber(props.overview.clicksToday, props.lang)}</strong>
-          </article>
-          <article>
-            <span>{copy.lastClick}</span>
-            <strong>{formatLastClick(props.overview.lastClickAt, props.lang)}</strong>
           </article>
         </div>
         <div className="rb-chart-box rb-chart-box-lg">

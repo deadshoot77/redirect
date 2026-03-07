@@ -106,7 +106,6 @@ export interface ShortLink {
 export interface ShortLinkListItem extends ShortLink {
   clicksReceived: number;
   clicksToday: number;
-  lastClickAt: string | null;
 }
 
 export interface AdminSettings {
@@ -124,7 +123,6 @@ export interface LinkOverviewStats {
   totalClicks: number;
   qrScans: number;
   clicksToday: number;
-  lastClickAt: string | null;
   uniqueClicks: number;
   nonUniqueClicks: number;
   visits: number;
