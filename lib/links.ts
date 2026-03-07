@@ -150,6 +150,17 @@ export interface GlobalAnalyticsData extends LinkAnalyticsData {
 
 export type AnalyticsRange = "today" | "this_week" | "last_week" | "this_month";
 
+export interface LinkRedirectSummary {
+  clicksReceived: number;
+  clicksToday: number;
+  lastClickAt: string | null;
+}
+
+export interface LinkRedirectSummariesResult {
+  stats: Record<string, LinkRedirectSummary>;
+  fallback: boolean;
+}
+
 export function createEmptyGlobalAnalyticsData(totalLinks = 0): GlobalAnalyticsData {
   const topDays: LabelCount[] = DAY_LABELS.map((label) => ({
     label,
@@ -321,6 +332,7 @@ const DEFAULT_ANALYTICS_TIME_ZONE = "Europe/Paris";
 const DEFAULT_ANALYTICS_RANGE: AnalyticsRange = "today";
 const GLOBAL_ANALYTICS_BATCH_SIZE = 1000;
 const CLICK_EVENTS_SCAN_BATCH_SIZE = 1000;
+const LINK_LIST_STATS_QUERY_TIMEOUT_MS = 2_500;
 const LINK_ANALYTICS_QUERY_TIMEOUT_MS = 7_000;
 const LINK_ANALYTICS_OPTIONAL_COUNT_TIMEOUT_MS = 1_500;
 const VERIFIED_REDIRECT_PATHS = ["direct", "landing_continue"] as const;
@@ -358,6 +370,7 @@ const cachedRuntimeLinkListStats = new Map<
   string,
   {
     clicksReceived: number;
+    clicksToday: number;
     lastClickAt: string | null;
     expiresAt: number;
   }
@@ -1282,25 +1295,45 @@ function createEventTypeCountQuery(
     .eq("event_type", eventType);
 }
 
-async function getLinkRedirectSummary(linkId: string): Promise<{
-  clicksReceived: number;
-  lastClickAt: string | null;
-}> {
+async function getLinkRedirectSummary(linkId: string, timeZone?: string): Promise<LinkRedirectSummary> {
+  const resolvedTimeZone = resolveAnalyticsTimeZone(timeZone);
+  const cacheKey = `${linkId}:${resolvedTimeZone}`;
   const nowMs = Date.now();
-  const cached = cachedRuntimeLinkListStats.get(linkId);
+  const cached = cachedRuntimeLinkListStats.get(cacheKey);
   if (cached && cached.expiresAt > nowMs) {
     return {
       clicksReceived: cached.clicksReceived,
+      clicksToday: cached.clicksToday,
       lastClickAt: cached.lastClickAt
     };
   }
 
-  const [directCount, landingContinueCount, directLastClickAt, landingContinueLastClickAt] = await Promise.all([
-    exactCount(createVerifiedHumanRedirectCountQuery(linkId, "direct"), "countLinkRedirects(direct)"),
-    exactCount(createVerifiedHumanRedirectCountQuery(linkId, "landing_continue"), "countLinkRedirects(landing_continue)"),
-    getLastHumanRedirectAt(linkId, "direct"),
-    getLastHumanRedirectAt(linkId, "landing_continue")
-  ]);
+  const todayStartIso = new Date(getAnalyticsWindow("today", resolvedTimeZone).startAtMs).toISOString();
+  const [
+    directCount,
+    landingContinueCount,
+    directClicksToday,
+    landingContinueClicksToday,
+    directLastClickAt,
+    landingContinueLastClickAt
+  ] = await withTimeout(
+    Promise.all([
+      exactCount(createVerifiedHumanRedirectCountQuery(linkId, "direct"), "countLinkRedirects(direct)"),
+      exactCount(createVerifiedHumanRedirectCountQuery(linkId, "landing_continue"), "countLinkRedirects(landing_continue)"),
+      exactCount(
+        createVerifiedHumanRedirectCountQuery(linkId, "direct").gte("created_at", todayStartIso),
+        "countLinkRedirectsToday(direct)"
+      ),
+      exactCount(
+        createVerifiedHumanRedirectCountQuery(linkId, "landing_continue").gte("created_at", todayStartIso),
+        "countLinkRedirectsToday(landing_continue)"
+      ),
+      getLastHumanRedirectAt(linkId, "direct"),
+      getLastHumanRedirectAt(linkId, "landing_continue")
+    ]),
+    LINK_LIST_STATS_QUERY_TIMEOUT_MS,
+    `getLinkRedirectSummary(${linkId})`
+  );
 
   const directLastClickMs = directLastClickAt ? Date.parse(directLastClickAt) : Number.NEGATIVE_INFINITY;
   const landingContinueLastClickMs = landingContinueLastClickAt ? Date.parse(landingContinueLastClickAt) : Number.NEGATIVE_INFINITY;
@@ -1309,38 +1342,86 @@ async function getLinkRedirectSummary(linkId: string): Promise<{
       ? directLastClickAt
       : landingContinueLastClickAt;
   const clicksReceived = directCount + landingContinueCount;
+  const clicksToday = directClicksToday + landingContinueClicksToday;
 
-  cachedRuntimeLinkListStats.set(linkId, {
+  cachedRuntimeLinkListStats.set(cacheKey, {
     clicksReceived,
+    clicksToday,
     lastClickAt,
     expiresAt: nowMs + LINK_LIST_STATS_CACHE_TTL_MS
   });
 
   return {
     clicksReceived,
+    clicksToday,
     lastClickAt
   };
 }
 
-export async function getLinksRedirectSummaries(
-  linkIds: string[]
-): Promise<Record<string, { clicksReceived: number; lastClickAt: string | null }>> {
-  const output: Record<string, { clicksReceived: number; lastClickAt: string | null }> = {};
+export async function getLinksRedirectSummariesBatch(
+  linkIds: string[],
+  timeZone?: string
+): Promise<LinkRedirectSummariesResult> {
+  const resolvedTimeZone = resolveAnalyticsTimeZone(timeZone);
+  const uniqueLinkIds = linkIds.filter((value, index, array) => value && array.indexOf(value) === index);
+  const output: Record<string, LinkRedirectSummary> = {};
 
-  for (const linkId of linkIds) {
-    try {
-      const summary = await getLinkRedirectSummary(linkId);
-      output[linkId] = summary;
-    } catch (error) {
-      console.error("getLinksRedirectSummaries fallback", { linkId, error });
+  if (uniqueLinkIds.length === 0) {
+    return {
+      stats: output,
+      fallback: false
+    };
+  }
+
+  let fallback = false;
+  const results = await Promise.allSettled(
+    uniqueLinkIds.map((linkId) => getLinkRedirectSummary(linkId, resolvedTimeZone))
+  );
+
+  results.forEach((result, index) => {
+    const linkId = uniqueLinkIds[index];
+    if (result.status === "fulfilled") {
+      output[linkId] = result.value;
+      return;
+    }
+
+    fallback = true;
+    const errorMessage = result.reason instanceof Error ? result.reason.message : String(result.reason);
+    console.error("getLinksRedirectSummaries fallback", {
+      linkId,
+      timeZone: resolvedTimeZone,
+      error: errorMessage
+    });
+    output[linkId] = {
+      clicksReceived: 0,
+      clicksToday: 0,
+      lastClickAt: null
+    };
+  });
+
+  for (const linkId of uniqueLinkIds) {
+    if (!output[linkId]) {
       output[linkId] = {
         clicksReceived: 0,
+        clicksToday: 0,
         lastClickAt: null
       };
+      fallback = true;
     }
   }
 
-  return output;
+  return {
+    stats: output,
+    fallback
+  };
+}
+
+export async function getLinksRedirectSummaries(
+  linkIds: string[],
+  timeZone?: string
+): Promise<Record<string, LinkRedirectSummary>> {
+  const result = await getLinksRedirectSummariesBatch(linkIds, timeZone);
+  return result.stats;
 }
 
 function sumCurrentDayClicks(points: TimeSeriesPoint[], timeZone: string): number {
@@ -1814,7 +1895,7 @@ async function listShortLinksWithoutRpc(
   }
 
   const rows = (data ?? []) as ShortLinkListBaseRow[];
-  const statsByLinkId = await getLinkListStatsFromEvents(
+  const { stats: statsByLinkId } = await getLinksRedirectSummariesBatch(
     rows.map((row) => row.id),
     timeZone
   );
@@ -1836,11 +1917,9 @@ async function listShortLinksWithoutRpc(
   const items = rows.map((row) =>
     mapShortLinkListItem({
       ...row,
-      ...(statsByLinkId.get(row.id) ?? {
-        clicks_received: 0,
-        clicks_today: 0,
-        last_click_at: null
-      })
+      clicks_received: statsByLinkId[row.id]?.clicksReceived ?? 0,
+      clicks_today: statsByLinkId[row.id]?.clicksToday ?? 0,
+      last_click_at: statsByLinkId[row.id]?.lastClickAt ?? null
     })
   );
   const totalPages = Math.max(1, Math.ceil(safeTotal / safeSize));

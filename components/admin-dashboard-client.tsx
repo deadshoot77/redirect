@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import AdminCharts from "@/components/admin-charts";
 import AdminLanguageToggle from "@/components/admin-language-toggle";
@@ -40,9 +41,9 @@ export default function AdminDashboardClient({ dashboard, rules }: AdminDashboar
         </div>
         <div className="header-actions">
           <AdminLanguageToggle lang={lang} onChange={setLanguage} ariaLabel={t(lang, "languageToggleAria")} />
-          <a className="secondary-button" href="/api/admin/export">
+          <Link className="secondary-button" href="/api/admin/export">
             {t(lang, "exportCsv")}
-          </a>
+          </Link>
           <LogoutButton label={t(lang, "logout")} loadingLabel={t(lang, "signingOut")} />
         </div>
       </header>

@@ -1,17 +1,29 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isAdminRequest } from "@/lib/auth";
+import { loadAdminLinksPageData } from "@/lib/admin-links-page-data";
 import {
   createEmptyGlobalAnalyticsData,
   createShortLink,
   getAdminSettings,
-  getGlobalAnalyticsData,
-  listShortLinksWithStats
+  getGlobalAnalyticsData
 } from "@/lib/links";
+import type { AdminSettings } from "@/lib/types";
 import { shortLinkCreateSchema } from "@/lib/validation";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 const GLOBAL_ANALYTICS_TIMEOUT_MS = 8_000;
+
+const DEFAULT_ADMIN_SETTINGS: AdminSettings = {
+  plan: "pro",
+  clickLimitMonthly: Number.MAX_SAFE_INTEGER,
+  trackingEnabled: true,
+  landingEnabled: false,
+  globalBackgroundUrl: null,
+  limitBehavior: "drop",
+  usageThisMonth: 0,
+  limitReached: false
+};
 
 async function withTimeout<T>(operation: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -44,10 +56,38 @@ export async function GET(request: NextRequest) {
   const range = request.nextUrl.searchParams.get("range");
 
   try {
-    const [links, settings] = await Promise.all([
-      listShortLinksWithStats(page, pageSize, timeZone),
+    const [linksResult, settingsResult] = await Promise.allSettled([
+      loadAdminLinksPageData(page, pageSize, {
+        timeZone
+      }),
       getAdminSettings({ includeUsage: false })
     ]);
+
+    if (linksResult.status !== "fulfilled") {
+      throw linksResult.reason;
+    }
+
+    const linksData = linksResult.value;
+    const settings =
+      settingsResult.status === "fulfilled"
+        ? settingsResult.value
+        : (() => {
+            console.error("admin links settings fallback to defaults", {
+              page,
+              pageSize,
+              error:
+                settingsResult.reason instanceof Error ? settingsResult.reason.message : settingsResult.reason
+            });
+            return DEFAULT_ADMIN_SETTINGS;
+          })();
+
+    if (linksData.linkStatsFallback) {
+      console.error("admin links stats fallback used", {
+        page,
+        pageSize,
+        timeZone: timeZone ?? "default"
+      });
+    }
 
     let globalAnalytics = null;
     let globalAnalyticsFallback = false;
@@ -70,12 +110,13 @@ export async function GET(request: NextRequest) {
           timeZone: timeZone ?? "default",
           error: error instanceof Error ? error.message : error
         });
-        globalAnalytics = createEmptyGlobalAnalyticsData(links.total);
+        globalAnalytics = createEmptyGlobalAnalyticsData(linksData.links.total);
       }
     }
 
     return NextResponse.json({
-      links,
+      links: linksData.links,
+      linkStatsFallback: linksData.linkStatsFallback,
       settings,
       ...(includeAnalytics ? { globalAnalytics, globalAnalyticsFallback } : {})
     });

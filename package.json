@@ -10,6 +10,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "test": "vitest run",
     "tracking:repro": "node scripts/tracking-repro.mjs"
   },
   "dependencies": {
@@ -26,10 +27,16 @@
     "zod": "^3.24.2"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.3.0",
     "@types/d3-geo": "^3.1.0",
     "@types/node": "^22.10.2",
     "@types/react": "^19.0.2",
     "@types/react-dom": "^19.0.2",
-    "typescript": "^5.7.2"
+    "eslint": "^9.22.0",
+    "eslint-config-next": "^15.1.0",
+    "jsdom": "^26.1.0",
+    "typescript": "^5.7.2",
+    "vitest": "^3.2.4"
   }
 }

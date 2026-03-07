@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isAdminRequest } from "@/lib/auth";
-import { getLinksRedirectSummaries } from "@/lib/links";
+import { getLinksRedirectSummariesBatch } from "@/lib/links";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,6 +15,7 @@ export async function GET(request: NextRequest) {
   }
 
   const rawIds = request.nextUrl.searchParams.get("ids") ?? "";
+  const timeZone = request.nextUrl.searchParams.get("tz") ?? undefined;
   const ids = rawIds
     .split(",")
     .map((value) => value.trim())
@@ -22,12 +23,18 @@ export async function GET(request: NextRequest) {
     .slice(0, 50);
 
   if (ids.length === 0) {
-    return NextResponse.json({ stats: {} });
+    return NextResponse.json({ stats: {}, statsFallback: false });
   }
 
   try {
-    const stats = await getLinksRedirectSummaries(ids);
-    return NextResponse.json({ stats });
+    const result = await getLinksRedirectSummariesBatch(ids, timeZone);
+    if (result.fallback) {
+      console.error("admin links stats route fallback used", {
+        idsCount: ids.length,
+        timeZone: timeZone ?? "default"
+      });
+    }
+    return NextResponse.json({ stats: result.stats, statsFallback: result.fallback });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Failed to fetch link stats" },

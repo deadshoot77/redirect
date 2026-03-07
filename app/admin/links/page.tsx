@@ -1,10 +1,10 @@
 import { redirect } from "next/navigation";
 import AdminLinksPageClient from "@/components/admin-links-page-client";
 import { isAdminAuthenticated } from "@/lib/auth";
+import { loadAdminLinksPageData } from "@/lib/admin-links-page-data";
 import {
   createEmptyGlobalAnalyticsData,
   getAdminSettings,
-  listShortLinksWithStats,
   type PaginatedShortLinks
 } from "@/lib/links";
 import type { AdminSettings } from "@/lib/types";
@@ -17,6 +17,17 @@ interface LinksPageProps {
     pageSize?: string;
   }>;
 }
+
+const DEFAULT_ADMIN_SETTINGS: AdminSettings = {
+  plan: "pro",
+  clickLimitMonthly: Number.MAX_SAFE_INTEGER,
+  trackingEnabled: true,
+  landingEnabled: false,
+  globalBackgroundUrl: null,
+  limitBehavior: "drop",
+  usageThisMonth: 0,
+  limitReached: false
+};
 
 export default async function AdminLinksPage({ searchParams }: LinksPageProps) {
   if (!(await isAdminAuthenticated())) {
@@ -35,24 +46,27 @@ export default async function AdminLinksPage({ searchParams }: LinksPageProps) {
     total: 0,
     totalPages: 1
   };
-  let settings: AdminSettings = {
-    plan: "pro" as const,
-    clickLimitMonthly: Number.MAX_SAFE_INTEGER,
-    trackingEnabled: true,
-    landingEnabled: false,
-    globalBackgroundUrl: null as string | null,
-    limitBehavior: "drop" as const,
-    usageThisMonth: 0,
-    limitReached: false
-  };
+  let settings: AdminSettings = DEFAULT_ADMIN_SETTINGS;
+  let initialLinkStatsFallback = false;
 
   try {
-    const [loadedLinks, loadedSettings] = await Promise.all([
-      listShortLinksWithStats(safePage, safePageSize),
+    const [loadedLinks, loadedSettings] = await Promise.allSettled([
+      loadAdminLinksPageData(safePage, safePageSize),
       getAdminSettings({ includeUsage: false })
     ]);
-    links = loadedLinks;
-    settings = loadedSettings;
+
+    if (loadedLinks.status === "fulfilled") {
+      links = loadedLinks.value.links;
+      initialLinkStatsFallback = loadedLinks.value.linkStatsFallback;
+    } else {
+      console.error("admin links page base load failed", loadedLinks.reason);
+    }
+
+    if (loadedSettings.status === "fulfilled") {
+      settings = loadedSettings.value;
+    } else {
+      console.error("admin links page settings fallback", loadedSettings.reason);
+    }
   } catch (error) {
     console.error("admin links page load fallback", error);
   }
@@ -61,6 +75,7 @@ export default async function AdminLinksPage({ searchParams }: LinksPageProps) {
   return (
     <AdminLinksPageClient
       initialLinks={links}
+      initialLinkStatsFallback={initialLinkStatsFallback}
       initialGlobalAnalytics={initialGlobalAnalytics}
       initialGlobalAnalyticsLoaded={false}
       initialSettings={settings}

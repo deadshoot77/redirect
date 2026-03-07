@@ -13,6 +13,7 @@ import type { AdminSettings } from "@/lib/types";
 
 interface AdminLinksPageClientProps {
   initialLinks: PaginatedShortLinks;
+  initialLinkStatsFallback: boolean;
   initialGlobalAnalytics: GlobalAnalyticsData;
   initialGlobalAnalyticsLoaded: boolean;
   initialSettings: AdminSettings;
@@ -30,6 +31,7 @@ interface NewLinkFormState {
 
 interface LinkListStat {
   clicksReceived: number;
+  clicksToday: number;
   lastClickAt: string | null;
 }
 
@@ -117,6 +119,7 @@ const words = {
     never: "Jamais",
     clicks: "redirections humaines",
     zeroStatsHint: "Stats a 0: verifie tracking actif + migration SQL a jour (db/migrations.sql).",
+    linkStatsFallbackHint: "Certaines statistiques n'ont pas pu etre chargees.",
     analyticsFallbackHint: "Analytics temporairement indisponibles, affichage des valeurs de secours.",
     chartsUnavailable: "Impossible d'afficher ce graphique pour le moment."
   },
@@ -203,6 +206,7 @@ const words = {
     never: "Never",
     clicks: "human redirects",
     zeroStatsHint: "Zero stats: verify tracking enabled and latest SQL migration applied (db/migrations.sql).",
+    linkStatsFallbackHint: "Some link statistics could not be loaded.",
     analyticsFallbackHint: "Analytics are temporarily unavailable, showing fallback values.",
     chartsUnavailable: "Unable to render this chart right now."
   }
@@ -243,12 +247,53 @@ function formatNumber(value: number, lang: AdminLang): string {
   return new Intl.NumberFormat(lang === "fr" ? "fr-FR" : "en-US").format(value);
 }
 
-function buildLinkListStatsMap(links: PaginatedShortLinks): Record<string, LinkListStat> {
+function toSafeNumber(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function normalizeLinkListStat(value?: Partial<LinkListStat> | null): LinkListStat {
+  return {
+    clicksReceived: toSafeNumber(value?.clicksReceived),
+    clicksToday: toSafeNumber(value?.clicksToday),
+    lastClickAt: typeof value?.lastClickAt === "string" && value.lastClickAt.length > 0 ? value.lastClickAt : null
+  };
+}
+
+function normalizeLinksPayload(links: PaginatedShortLinks): PaginatedShortLinks {
+  return {
+    ...links,
+    page: toSafeNumber(links.page) || 1,
+    pageSize: toSafeNumber(links.pageSize) || 20,
+    total: toSafeNumber(links.total),
+    totalPages: Math.max(1, toSafeNumber(links.totalPages) || 1),
+    items: Array.isArray(links.items)
+      ? links.items.map((link) => {
+          const stats = normalizeLinkListStat(link);
+          return {
+            ...link,
+            tags: Array.isArray(link.tags) ? link.tags : [],
+            clicksReceived: stats.clicksReceived,
+            clicksToday: stats.clicksToday,
+            lastClickAt: stats.lastClickAt
+          };
+        })
+      : []
+  };
+}
+
+function buildLinkListStatsMap(
+  links: PaginatedShortLinks,
+  options?: {
+    includeStats?: boolean;
+  }
+): Record<string, LinkListStat> {
+  if (options?.includeStats === false) {
+    return {};
+  }
+
   return links.items.reduce<Record<string, LinkListStat>>((output, link) => {
-    output[link.id] = {
-      clicksReceived: link.clicksReceived,
-      lastClickAt: link.lastClickAt
-    };
+    output[link.id] = normalizeLinkListStat(link);
     return output;
   }, {});
 }
@@ -283,17 +328,24 @@ function StatsList({
 
 export default function AdminLinksPageClient({
   initialLinks,
+  initialLinkStatsFallback,
   initialGlobalAnalytics,
   initialGlobalAnalyticsLoaded,
   initialSettings
 }: AdminLinksPageClientProps) {
-  const [links, setLinks] = useState<PaginatedShortLinks>(initialLinks);
+  const safeInitialLinks = normalizeLinksPayload(initialLinks);
+  const [links, setLinks] = useState<PaginatedShortLinks>(safeInitialLinks);
   const [globalAnalytics, setGlobalAnalytics] = useState<GlobalAnalyticsData>(initialGlobalAnalytics);
   const [globalAnalyticsLoaded, setGlobalAnalyticsLoaded] = useState(initialGlobalAnalyticsLoaded);
   const [globalAnalyticsFallback, setGlobalAnalyticsFallback] = useState(false);
+  const [linkStatsFallback, setLinkStatsFallback] = useState(initialLinkStatsFallback);
   const [settings, setSettings] = useState<AdminSettings>(initialSettings);
   const [linkAnalytics, setLinkAnalytics] = useState<Record<string, LinkAnalyticsData>>({});
-  const [linkListStats, setLinkListStats] = useState<Record<string, LinkListStat>>(() => buildLinkListStatsMap(initialLinks));
+  const [linkListStats, setLinkListStats] = useState<Record<string, LinkListStat>>(() =>
+    buildLinkListStatsMap(safeInitialLinks, {
+      includeStats: !initialLinkStatsFallback
+    })
+  );
   const [activeLinkStats, setActiveLinkStats] = useState<{
     id: string;
     slug: string;
@@ -335,6 +387,10 @@ export default function AdminLinksPageClient({
   }, [settings.globalBackgroundUrl]);
 
   useEffect(() => {
+    if (linkStatsFallback) {
+      return;
+    }
+
     const nextStats = buildLinkListStatsMap(links);
     if (Object.keys(nextStats).length === 0) {
       return;
@@ -354,7 +410,7 @@ export default function AdminLinksPageClient({
 
       return changed ? merged : current;
     });
-  }, [links]);
+  }, [linkStatsFallback, links]);
 
   useEffect(() => {
     if (activeSection !== "analytics" || loadingAnalyticsData) {
@@ -385,13 +441,18 @@ export default function AdminLinksPageClient({
 
     async function loadVisibleLinkStats() {
       try {
-        const response = await fetch(`/api/admin/links/stats?ids=${encodeURIComponent(missingIds.join(","))}`, {
-          cache: "no-store",
-          credentials: "include"
-        });
+        const timeZoneParam = encodeURIComponent(clientTimeZone);
+        const response = await fetch(
+          `/api/admin/links/stats?ids=${encodeURIComponent(missingIds.join(","))}&tz=${timeZoneParam}`,
+          {
+            cache: "no-store",
+            credentials: "include"
+          }
+        );
         const payload = (await response.json().catch(() => null)) as
           | {
               stats?: Record<string, LinkListStat>;
+              statsFallback?: boolean;
               error?: string;
             }
           | null;
@@ -401,14 +462,19 @@ export default function AdminLinksPageClient({
         }
 
         if (!cancelled) {
+          const normalizedStats = Object.fromEntries(
+            Object.entries(payload.stats).map(([id, stat]) => [id, normalizeLinkListStat(stat)])
+          );
           setLinkListStats((current) => ({
             ...current,
-            ...payload.stats
+            ...normalizedStats
           }));
+          setLinkStatsFallback(Boolean(payload.statsFallback));
         }
       } catch (error) {
         if (!cancelled) {
           console.error("visible link stats fallback", error);
+          setLinkStatsFallback(true);
         }
       } finally {
         for (const id of missingIds) {
@@ -422,7 +488,7 @@ export default function AdminLinksPageClient({
     return () => {
       cancelled = true;
     };
-  }, [linkListStats, links.items]);
+  }, [clientTimeZone, linkListStats, links.items]);
 
   useEffect(() => {
     if (activeSection !== "analytics" || globalAnalyticsLoaded) {
@@ -556,6 +622,7 @@ export default function AdminLinksPageClient({
       const payload = (await response.json().catch(() => null)) as
         | {
             links?: PaginatedShortLinks;
+            linkStatsFallback?: boolean;
             globalAnalytics?: GlobalAnalyticsData;
             globalAnalyticsFallback?: boolean;
             settings?: AdminSettings;
@@ -567,7 +634,9 @@ export default function AdminLinksPageClient({
         throw new Error(toErrorMessage(payload, "Failed to refresh links"));
       }
 
-      setLinks(payload.links);
+      const nextLinks = normalizeLinksPayload(payload.links);
+      setLinks(nextLinks);
+      setLinkStatsFallback(Boolean(payload.linkStatsFallback));
       setSettings(payload.settings);
       if (payload.globalAnalytics) {
         setGlobalAnalytics(payload.globalAnalytics);
@@ -942,6 +1011,8 @@ export default function AdminLinksPageClient({
         </section>
       ) : (
         <>
+          {linkStatsFallback ? <p className="rb-feedback">{copy.linkStatsFallbackHint}</p> : null}
+
           <section className="rb-toolbar">
             <div className="rb-toolbar-left">
               <label htmlFor="sort_select">
